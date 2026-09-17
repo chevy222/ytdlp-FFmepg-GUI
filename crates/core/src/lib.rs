@@ -9,6 +9,7 @@
 //! 设计原则（§1.3）：核心逻辑与界面分离；失败安全（不破坏原文件）；
 //! JSON 原子写（临时文件 + rename）；列表即工作台。
 
+pub mod cli;
 pub mod config;
 pub mod cookies;
 pub mod download;

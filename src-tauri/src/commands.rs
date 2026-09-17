@@ -85,6 +85,7 @@ pub fn add_url(app: AppHandle, urls: Vec<String>) -> CmdResult<()> {
     }
     drop(hist);
     persist(&app);
+    let _ = app.emit("list:changed", ());
     Ok(())
 }
 
@@ -158,30 +159,7 @@ fn run_probe(app: AppHandle, id: String) {
 
     let resolver = state.resolver();
     let network = state.config.lock().unwrap().network.clone();
-    let cookies_store = CookieStore::new(state.paths.cookies_dir());
-    let cookie_file = item
-        .host
-        .clone()
-        .or_else(|| {
-            item.url
-                .as_deref()
-                .and_then(ytdlp_core::cookies::host_from_url)
-        })
-        .and_then(|h| cookies_store.match_file(&h));
-
-    // 导出 netscape 临时文件
-    let mut netscape: Option<PathBuf> = None;
-    if let Some(host) = item.host.clone().or_else(|| {
-        item.url
-            .as_deref()
-            .and_then(ytdlp_core::cookies::host_from_url)
-    }) {
-        let tmp = state.paths.temp_dir().join(format!("cookies-{}.txt", host));
-        if let Ok(Some(p)) = cookies_store.export_netscape(&host, &tmp) {
-            netscape = Some(p);
-        }
-    }
-    let _ = cookie_file;
+    let netscape = resolve_cookies(&state, &item);
 
     let result = if item.url.is_some() {
         probe::probe_url(
@@ -461,6 +439,11 @@ fn finish_download(
 }
 
 fn default_output_dir(state: &AppState, _item: &MediaItem) -> PathBuf {
+    if let Some(dir) = &state.cli.lock().unwrap().dir {
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
     if let Some(dir) = &state.config.lock().unwrap().general.default_output_dir {
         if !dir.is_empty() {
             return PathBuf::from(dir);
@@ -478,7 +461,14 @@ fn default_output_dir(state: &AppState, _item: &MediaItem) -> PathBuf {
         .unwrap_or_else(|| state.paths.root().join("output"))
 }
 
-fn prepare_cookies(state: &AppState, item: &MediaItem) -> Option<PathBuf> {
+/// Cookie 文件解析：CLI `--cookies` 优先；否则从 Cookie 库按站点导出 Netscape 临时文件。
+fn resolve_cookies(state: &AppState, item: &MediaItem) -> Option<PathBuf> {
+    if let Some(p) = &state.cli.lock().unwrap().cookies {
+        let pb = PathBuf::from(p);
+        if pb.is_file() {
+            return Some(pb);
+        }
+    }
     let host = item.host.clone().or_else(|| {
         item.url
             .as_deref()
@@ -487,6 +477,11 @@ fn prepare_cookies(state: &AppState, item: &MediaItem) -> Option<PathBuf> {
     let store = CookieStore::new(state.paths.cookies_dir());
     let tmp = state.paths.temp_dir().join(format!("cookies-{}.txt", host));
     store.export_netscape(&host, &tmp).ok().flatten()
+}
+
+/// 下载/解析共用 cookie 解析（历史名称保留）。
+fn prepare_cookies(state: &AppState, item: &MediaItem) -> Option<PathBuf> {
+    resolve_cookies(state, item)
 }
 
 /// 合并面板参数（MG-01/04：低频操作，仅面板内配置，不落 config.json）。

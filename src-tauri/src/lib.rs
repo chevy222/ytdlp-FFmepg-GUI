@@ -11,8 +11,29 @@ use tauri::Manager;
 use ytdlp_core::model::Status;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// 将 CLI 参数应用到主实例：存 overrides 并把 URL 投入列表解析。
+fn apply_cli(app: &tauri::AppHandle) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let cli = ytdlp_core::cli::parse_cli_args(&args);
+    if !cli.urls.is_empty() {
+        let st = app.state::<state::AppState>();
+        *st.cli.lock().unwrap() = state::CliOverrides::from(cli.clone());
+        let _ = commands::add_url(app.clone(), cli.urls);
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // 第二实例：解析 argv 并把 URL/覆盖转发给已运行实例（§UL-09 单实例转发）
+            let args: Vec<String> = argv.iter().skip(1).map(|s| s.to_string()).collect();
+            let cli = ytdlp_core::cli::parse_cli_args(&args);
+            if !cli.urls.is_empty() {
+                let st = app.state::<state::AppState>();
+                *st.cli.lock().unwrap() = state::CliOverrides::from(cli.clone());
+                let _ = commands::add_url(app.app_handle().clone(), cli.urls);
+            }
+        }))
         .manage(state::AppState::new())
         .invoke_handler(tauri::generate_handler![
             commands::add_url,
@@ -43,6 +64,8 @@ pub fn run() {
             if let Err(e) = state.paths.ensure_dirs() {
                 eprintln!("创建运行时目录失败：{}", e);
             }
+            // CLI 启动参数（§UL-09）：首实例带 --url 等直接执行
+            apply_cli(app.handle());
             // 启动时恢复队列（UL-10）：中断的任务标记失败，可重试
             {
                 let mut hist = state.history.lock().unwrap();
