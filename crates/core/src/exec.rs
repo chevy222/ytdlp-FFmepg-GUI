@@ -296,8 +296,16 @@ mod tests {
     #[test]
     fn tool_names() {
         assert_eq!(Tool::YtDlp.name(), "yt-dlp");
-        assert_eq!(Tool::Ffmpeg.exe_name(), "ffmpeg");
-        assert_eq!(Tool::Ffprobe.exe_name(), "ffprobe");
+        #[cfg(windows)]
+        {
+            assert_eq!(Tool::Ffmpeg.exe_name(), "ffmpeg.exe");
+            assert_eq!(Tool::Ffprobe.exe_name(), "ffprobe.exe");
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(Tool::Ffmpeg.exe_name(), "ffmpeg");
+            assert_eq!(Tool::Ffprobe.exe_name(), "ffprobe");
+        }
         assert_eq!(Tool::Deno.name(), "deno");
     }
 
