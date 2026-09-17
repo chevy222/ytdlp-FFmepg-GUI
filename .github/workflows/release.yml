@@ -1,0 +1,50 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Windows Release（单 EXE + zip）
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链（stable + Windows target）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 核心层单元测试
+        run: cargo test -p ytdlp-core
+
+      - name: Clippy 质量门禁（-D warnings）
+        run: cargo clippy -p ytdlp-core --all-targets -- -D warnings
+
+      - name: Release 构建
+        run: cargo build --release
+
+      - name: 打包 zip（Release 附件套一层 zip）
+        shell: pwsh
+        run: |
+          $Root = $env:GITHUB_WORKSPACE
+          $Exe = "$Root\src-tauri\target\release\ytdlp-FFmpeg-GUI.exe"
+          if (-not (Test-Path $Exe)) { throw "缺少产物 $Exe" }
+          $Tag = $env:GITHUB_REF_NAME
+          $ZipName = "ytdlp-FFmpeg-GUI-$Tag-win64.zip"
+          Compress-Archive -Path $Exe -DestinationPath "$Root\$ZipName" -Force
+          Write-Host "ZIP: $ZipName"
+
+      - name: 发布 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ytdlp-FFmpeg-GUI-${{ github.ref_name }}-win64.zip
+          draft: true
+          generate_release_notes: true

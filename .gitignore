@@ -1,0 +1,21 @@
+/target
+**/target
+crates/*/target
+src-tauri/target
+
+# 运行时产生的文件（exe 同级目录约定）
+/config
+/temp
+/tools
+/logs
+
+# 本地构建产物
+*.exe
+*.msi
+dist/
+node_modules/
+
+# 编辑器
+.idea/
+.vscode/
+*.swp

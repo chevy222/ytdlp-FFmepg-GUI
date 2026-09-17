@@ -1,0 +1,20 @@
+[package]
+name = "ytdlp-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "ytdlp-FFmpeg-GUI（影栈）：下载/转码/合并一体的本地视频工具箱"
+
+[lib]
+name = "ytdlp_gui_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ytdlp-core = { path = "../crates/core" }

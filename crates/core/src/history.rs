@@ -1,0 +1,208 @@
+//! history.json：统一列表/队列/历史持久化（§3.1 UL-07/UL-10、§7.2）。
+//!
+//! 规则：MediaItem 序列化；保留条数默认 100、上限 200（N5 统一）；
+//! JSON 原子写；重启恢复未完成任务（可继续/标记失败），已完成项保留。
+
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+
+use crate::model::MediaItem;
+use crate::{paths::atomic_write_json, CoreError, Result};
+
+/// 历史仓库：条目有序列表 + 当前上限。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct History {
+    #[serde(default)]
+    pub items: Vec<MediaItem>,
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+}
+
+fn default_limit() -> usize {
+    100
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            limit: 100,
+        }
+    }
+}
+
+impl History {
+    pub fn new(limit: usize) -> Self {
+        Self {
+            items: Vec::new(),
+            limit: limit.clamp(1, crate::config::GeneralConfig::HISTORY_LIMIT_MAX),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// 按 id 查找。
+    pub fn get(&self, id: &str) -> Option<&MediaItem> {
+        self.items.iter().find(|i| i.id == id)
+    }
+
+    /// 追加或按 id 更新；超过上限裁剪最旧（保留条数限制）。
+    pub fn upsert(&mut self, item: MediaItem) {
+        if let Some(existing) = self.items.iter_mut().find(|i| i.id == item.id) {
+            *existing = item;
+        } else {
+            self.items.push(item);
+        }
+        while self.items.len() > self.limit {
+            self.items.remove(0);
+        }
+    }
+
+    /// 删除条目（仅终态可删，调用方保证）。
+    pub fn remove(&mut self, id: &str) -> bool {
+        let before = self.items.len();
+        self.items.retain(|i| i.id != id);
+        self.items.len() != before
+    }
+
+    /// 清空已完成（UL-06 清空已完成）。
+    pub fn clear_done(&mut self) {
+        self.items.retain(|i| !i.status.is_terminal());
+    }
+
+    /// 加载；文件缺失返回空历史。
+    pub fn load(path: &Path) -> Result<Self> {
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let text = std::fs::read_to_string(path)?;
+        match serde_json::from_str::<History>(&text) {
+            Ok(h) => Ok(h),
+            Err(e) => {
+                let backup = path.with_extension("json.corrupt");
+                let _ = std::fs::copy(path, &backup);
+                Err(CoreError::ConfigCorrupt(format!(
+                    "history.json 损坏（已备份到 {}）：{}",
+                    backup.display(),
+                    e
+                )))
+            }
+        }
+    }
+
+    pub fn save(&self, path: &Path) -> Result<()> {
+        atomic_write_json(path, self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ItemKind, Status};
+    use tempfile::tempdir;
+
+    fn item(n: usize) -> MediaItem {
+        MediaItem::new(ItemKind::LocalFile, format!("文件{}.mp4", n))
+    }
+
+    #[test]
+    fn default_limit_100() {
+        assert_eq!(History::default().limit, 100);
+    }
+
+    #[test]
+    fn new_clamps_limit_to_200() {
+        assert_eq!(History::new(999).limit, 200);
+        assert_eq!(History::new(0).limit, 1);
+        assert_eq!(History::new(150).limit, 150);
+    }
+
+    #[test]
+    fn upsert_trims_oldest_over_limit() {
+        let mut h = History::new(3);
+        for i in 0..5 {
+            h.upsert(item(i));
+        }
+        assert_eq!(h.len(), 3);
+        assert!(h.get(&h.items[0].id.clone()).is_some());
+        // 最旧的 0/1 被裁剪
+        assert!(h.items.iter().all(|i| i.title != "文件0.mp4"));
+    }
+
+    #[test]
+    fn upsert_updates_by_id() {
+        let mut h = History::new(10);
+        let it = item(1);
+        let id = it.id.clone();
+        h.upsert(it);
+        let mut it2 = item(2);
+        it2.id = id.clone();
+        it2.status = Status::Done;
+        h.upsert(it2);
+        assert_eq!(h.len(), 1);
+        assert_eq!(h.get(&id).unwrap().status, Status::Done);
+    }
+
+    #[test]
+    fn remove_returns_bool() {
+        let mut h = History::new(10);
+        let it = item(1);
+        let id = it.id.clone();
+        h.upsert(it);
+        assert!(h.remove(&id));
+        assert!(!h.remove(&id));
+        assert!(h.is_empty());
+    }
+
+    #[test]
+    fn clear_done_keeps_active() {
+        let mut h = History::new(10);
+        let mut done = item(1);
+        done.status = Status::Done;
+        let mut failed = item(2);
+        failed.status = Status::Failed;
+        let mut active = item(3);
+        active.status = Status::Downloading;
+        h.upsert(done);
+        h.upsert(failed);
+        h.upsert(active);
+        h.clear_done();
+        assert_eq!(h.len(), 1);
+        assert_eq!(h.items[0].status, Status::Downloading);
+    }
+
+    #[test]
+    fn load_missing_returns_empty() {
+        let root = tempdir().unwrap();
+        let h = History::load(&root.path().join("nope.json")).unwrap();
+        assert!(h.is_empty());
+    }
+
+    #[test]
+    fn save_load_roundtrip() {
+        let root = tempdir().unwrap();
+        let p = root.path().join("history.json");
+        let mut h = History::new(100);
+        h.upsert(item(1));
+        h.save(&p).unwrap();
+        let back = History::load(&p).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back.items[0].title, "文件1.mp4");
+    }
+
+    #[test]
+    fn corrupt_history_backed_up() {
+        let root = tempdir().unwrap();
+        let p = root.path().join("history.json");
+        std::fs::write(&p, "boom").unwrap();
+        assert!(History::load(&p).is_err());
+        assert!(root.path().join("history.json.corrupt").exists());
+    }
+}
