@@ -13,14 +13,14 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 安装 Rust 工具链（stable + Windows target）
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.2
 
       - name: 核心层单元测试
         run: cargo test -p ytdlp-core
@@ -43,7 +43,7 @@ jobs:
           Write-Host "ZIP: $ZipName"
 
       - name: 发布 GitHub Release（zip + 单 EXE 直传）
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             ytdlp-FFmpeg-GUI-${{ github.ref_name }}-win64.zip

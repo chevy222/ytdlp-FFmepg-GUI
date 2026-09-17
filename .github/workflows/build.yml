@@ -14,14 +14,14 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 安装 Rust 工具链（stable + Windows target）
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.2
 
       - name: 核心层单元测试
         run: cargo test -p ytdlp-core
@@ -40,7 +40,7 @@ jobs:
           Write-Host "产物大小: $([math]::Round((Get-Item $Exe).Length/1MB,1)) MB"
 
       - name: 上传产物（PR 调试用）
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ytdlp-FFmpeg-GUI-win64
           path: target/release/ytdlp-FFmpeg-GUI.exe
