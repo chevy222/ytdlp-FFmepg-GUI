@@ -709,6 +709,10 @@ document.getElementById('setNav').addEventListener('click', e=>{
 });
 function cfgRef(){return S.config||{download:{},transcode:{},general:{},dependencies:{},network:{}};}
 
+function probeHw(){
+  INVOKE('probe_hw_encoders').then(r=>{S.hw=r;renderSetPage();}).catch(()=>{S.hw={qsv:false,nvenc:false,amf:false};});
+}
+
 function renderSetPage(){
   const c=cfgRef();
   const d=c.download||{},t=c.transcode||{},g=c.general||{},dp=c.dependencies||{},n=c.network||{};
@@ -749,11 +753,13 @@ function renderSetPage(){
     h+=row('嵌入封面 / 元数据',chk('download.embed_cover',d.embed_cover,''));
     h+=row('文件名模板（下载/转码/合并输出共用）',sel('download.filename_template',d.filename_template,[['纯标题','纯标题'],['标题+ID','标题+ID'],['UP主-标题','UP主-标题'],['日期-标题','日期-标题']]));
   } else if(curPage==='transcode'){
+    if(S.hw===undefined)probeHw();
     h+=row('长边上限 MAXW',num('transcode.max_w',t.max_w,0,7680));
     h+=row('短边上限 MAXH',num('transcode.max_h',t.max_h,0,4320));
     h+=row('码率封顶 kbps（留空 = 自动）',txt('transcode.brcap_kbps',t.brcap_kbps==null?'':t.brcap_kbps,'留空自动'));
     h+=row('兜底码率 kbps',num('transcode.br_default_kbps',t.br_default_kbps,0,100000));
-    h+=row('默认编码器（自动 = QSV → libx265 兜底）',sel('transcode.force_encoder_mode',t.force_encoder_mode,[['auto','自动'],['libx265','libx265'],['nvenc','NVENC H.265'],['amf','AMF H.265']]));
+    const encOpts=[['auto','自动'],['libx265','libx265'],['nvenc','NVENC H.265'+(S.hw&&!S.hw.nvenc?'（未检测到）':'')],['amf','AMF H.265'+(S.hw&&!S.hw.amf?'（未检测到）':'')]];
+    h+=row('默认编码器（自动 = QSV → libx265 兜底）',sel('transcode.force_encoder_mode',t.force_encoder_mode,encOpts),'硬件编码器运行失败自动回退 libx265；未检测到的选项仍可选用');
     h+=row('QSV low_power',chk('transcode.low_power',t.low_power,''));
     h+=row('保留封面',chk('transcode.keep_cover',t.keep_cover,''));
     h+='<div class="set-row"><div class="k">x265 CRF<small>固定 23，不提供配置</small></div><div class="v"><span style="color:#94a3b8">23（固定）</span></div></div>';

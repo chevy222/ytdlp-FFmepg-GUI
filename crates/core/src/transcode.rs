@@ -176,11 +176,39 @@ fn pick_encoder(
     }
 }
 
+/// 可用硬件编码器探测结果（TC-16）。
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+pub struct HwEncoders {
+    pub qsv: bool,
+    pub nvenc: bool,
+    pub amf: bool,
+}
+
+/// 解析 `ffmpeg -encoders` 输出（纯函数，可单测）。
+pub fn parse_encoders_output(text: &str) -> HwEncoders {
+    let mut hw = HwEncoders::default();
+    for line in text.lines() {
+        if line.contains("hevc_qsv") {
+            hw.qsv = true;
+        } else if line.contains("hevc_nvenc") {
+            hw.nvenc = true;
+        } else if line.contains("hevc_amf") {
+            hw.amf = true;
+        }
+    }
+    hw
+}
+
 /// 探测 ffmpeg 是否内置 QSV（hevc_qsv）编码器。
 pub fn qsv_available(resolver: &ToolResolver) -> Result<bool> {
+    Ok(detect_hw_encoders(resolver)?.qsv)
+}
+
+/// 探测可用硬件编码器（QSV/NVENC/AMF，TC-16）。
+pub fn detect_hw_encoders(resolver: &ToolResolver) -> Result<HwEncoders> {
     let out = crate::exec::run_tool_capture(resolver, Tool::Ffmpeg, &["-encoders"])?;
     let text = String::from_utf8_lossy(&out.stdout);
-    Ok(text.lines().any(|l| l.contains("hevc_qsv")))
+    Ok(parse_encoders_output(&text))
 }
 
 /// 视频滤镜链：旋转（transpose）→ 分辨率上限（不放大，force_original_aspect_ratio）。
@@ -319,6 +347,8 @@ pub(crate) fn parse_out_time_us(line: &str) -> Option<u64> {
 /// 执行转码。
 ///
 /// 返回输出路径；取消时终止子进程树并删除输出残留（UL-06）；失败删除半成品保留原文件。
+/// 执行转码（TC-16 硬编失败自动回退 libx265：显式 NVENC/AMF 或自动探测
+/// 出的 QSV 运行时失败，非取消时用 CPU 编码重试一次，进度/日志延续）。
 pub fn run_transcode(
     resolver: &ToolResolver,
     params: &TranscodeParams,
@@ -326,6 +356,28 @@ pub fn run_transcode(
     cancel: &Arc<AtomicBool>,
     mut on_progress: impl FnMut(f32),
     mut on_log: impl FnMut(String),
+) -> Result<PathBuf> {
+    match run_transcode_once(resolver, params, meta, cancel, &mut on_progress, &mut on_log) {
+        Err(e)
+            if !matches!(e, CoreError::Cancelled)
+                && !matches!(params.encoder_mode.as_str(), "libx265") =>
+        {
+            on_log("硬编失败，自动回退 libx265 重试…".to_string());
+            let mut p2 = params.clone();
+            p2.encoder_mode = "libx265".into();
+            run_transcode_once(resolver, &p2, meta, cancel, &mut on_progress, &mut on_log)
+        }
+        r => r,
+    }
+}
+
+fn run_transcode_once(
+    resolver: &ToolResolver,
+    params: &TranscodeParams,
+    meta: &MediaMeta,
+    cancel: &Arc<AtomicBool>,
+    on_progress: &mut dyn FnMut(f32),
+    on_log: &mut dyn FnMut(String),
 ) -> Result<PathBuf> {
     let out = params.output_path()?;
     let args = build_args(resolver, params, meta)?;
@@ -502,6 +554,19 @@ mod tests {
         assert!(vf.starts_with("transpose=1,"), "{}", vf);
         let vf = build_vf(RotAngle::from_degrees(270), 0, 0).unwrap();
         assert_eq!(vf, "transpose=2");
+    }
+
+    #[test]
+    fn parse_encoders_detects_hw() {
+        let text = [
+            " V....D hevc_qsv            HEVC (Intel Quick Sync Video acceleration)",
+            " V....D hevc_nvenc          HEVC (NVIDIA NVENC)",
+            " V....D libx265             libx265 H.265 / HEVC",
+        ]
+        .join("\n");
+        let hw = parse_encoders_output(&text);
+        assert!(hw.qsv && hw.nvenc && !hw.amf);
+        assert!(!parse_encoders_output("V....D libx265").qsv);
     }
 
     #[test]

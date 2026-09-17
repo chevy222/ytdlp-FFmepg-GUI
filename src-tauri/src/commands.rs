@@ -25,6 +25,16 @@ use ytdlp_core::{transition, CoreError};
 use crate::login;
 use crate::state::AppState;
 
+/// 硬件编码器探测（TC-16）：QSV/NVENC/AMF 可用性，供设置页标注。
+#[tauri::command]
+pub fn probe_hw_encoders(app: AppHandle) -> CmdResult<serde_json::Value> {
+    let state = app.state::<AppState>();
+    let resolver = state.resolver();
+    let hw = transcode::detect_hw_encoders(&resolver)
+        .map_err(|e| format!("探测编码器失败：{}", e))?;
+    Ok(serde_json::json!({ "qsv": hw.qsv, "nvenc": hw.nvenc, "amf": hw.amf }))
+}
+
 /// 依赖自检项（前端显示）。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ToolStatus {

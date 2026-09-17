@@ -54,6 +54,7 @@ pub fn run() {
             commands::save_cookies,
             commands::delete_cookie,
             commands::probe_dependencies,
+            commands::probe_hw_encoders,
             commands::open_item_dir,
             commands::clear_temp,
             commands::rot_item,
