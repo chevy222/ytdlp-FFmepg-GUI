@@ -42,9 +42,11 @@ jobs:
           Compress-Archive -Path $Exe -DestinationPath "$Root\$ZipName" -Force
           Write-Host "ZIP: $ZipName"
 
-      - name: 发布 GitHub Release
+      - name: 发布 GitHub Release（zip + 单 EXE 直传）
         uses: softprops/action-gh-release@v2
         with:
-          files: ytdlp-FFmpeg-GUI-${{ github.ref_name }}-win64.zip
+          files: |
+            ytdlp-FFmpeg-GUI-${{ github.ref_name }}-win64.zip
+            src-tauri/target/release/ytdlp-FFmpeg-GUI.exe
           draft: true
           generate_release_notes: true

@@ -29,17 +29,19 @@ pwsh ./scripts/build.ps1
 产物：`src-tauri/target/release/ytdlp-FFmpeg-GUI.exe`（单 EXE，无安装包）。
 
 CI：push/PR 在 **Windows runner** 上跑 单测 → Clippy(-D warnings) → Release 构建；
-push `v*` tag 发布 zip 到 GitHub Release。
+push `v*` tag 发布 **zip + 单 EXE 直传**到 GitHub Release。
 
 ## 里程碑
 
 | 阶段 | 内容 |
 | --- | --- |
-| M0 工程初始化 | workspace 骨架 + 目录约定 + 核心层（模型/状态机/配置/历史，48 单测）+ build.ps1 + CI 占位 + 空窗口可运行 |
-| M1 解析 + 列表 + 下载 | 元数据解析（URL/本地/产物）+ 统一列表 + 下载能力 + 登录/依赖/设置 + CLI 入口 |
-| M2 转码 | 批量转码 + 旋转/裁切/封面 + 列表封面旋转交互 |
-| M3 合并 | 合并面板 + 同参直拼/异参统一 |
-| M4 打磨发布 | 依赖自检、日志、图标、版本；单 EXE 发布 |
+| M0 工程初始化 | workspace 骨架 + 目录约定 + 核心层（模型/状态机/配置/历史）+ build.ps1 + CI + 空窗口可运行 |
+| M1 解析 + 列表 + 下载 | 元数据解析（URL/本地/产物）+ 统一列表 + 下载能力 + WebView2 登录 + 依赖/设置 |
+| M2 转码 | 批量转码引擎（H.265：QSV→libx265 兜底/NVENC/AMF）+ 旋转/分辨率/码率/增益/封面 + 产物回列表 |
+| M3 合并 | 合并面板 + 同参直拼（extradata 校验）/ 异参统一 + 产物回列表 |
+| M4 CLI 入口 | --url/--cookies/--dir/--yt-dlp-path/--deno-path + 单实例转发 |
+| P1 增强 | 播放列表展开平铺、时间范围下载（剪辑）、合并音量归一化 |
+| P2 完善 | TC-16 硬件编码器探测 + 硬编失败自动回退 libx265 |
 
 ## 需求文档
 
