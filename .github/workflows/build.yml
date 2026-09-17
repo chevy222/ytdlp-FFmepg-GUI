@@ -35,7 +35,7 @@ jobs:
       - name: 校验产物
         shell: pwsh
         run: |
-          $Exe = "src-tauri\target\release\ytdlp-FFmpeg-GUI.exe"
+          $Exe = "target\release\ytdlp-FFmpeg-GUI.exe"
           if (-not (Test-Path $Exe)) { throw "缺少产物 $Exe" }
           Write-Host "产物大小: $([math]::Round((Get-Item $Exe).Length/1MB,1)) MB"
 
@@ -43,5 +43,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ytdlp-FFmpeg-GUI-win64
-          path: src-tauri/target/release/ytdlp-FFmpeg-GUI.exe
+          path: target/release/ytdlp-FFmpeg-GUI.exe
           if-no-files-found: error

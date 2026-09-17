@@ -35,7 +35,7 @@ jobs:
         shell: pwsh
         run: |
           $Root = $env:GITHUB_WORKSPACE
-          $Exe = "$Root\src-tauri\target\release\ytdlp-FFmpeg-GUI.exe"
+          $Exe = "$Root\target\release\ytdlp-FFmpeg-GUI.exe"
           if (-not (Test-Path $Exe)) { throw "缺少产物 $Exe" }
           $Tag = $env:GITHUB_REF_NAME
           $ZipName = "ytdlp-FFmpeg-GUI-$Tag-win64.zip"
@@ -47,6 +47,6 @@ jobs:
         with:
           files: |
             ytdlp-FFmpeg-GUI-${{ github.ref_name }}-win64.zip
-            src-tauri/target/release/ytdlp-FFmpeg-GUI.exe
+            target/release/ytdlp-FFmpeg-GUI.exe
           draft: true
           generate_release_notes: true
