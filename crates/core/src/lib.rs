@@ -14,6 +14,7 @@ pub mod cookies;
 pub mod download;
 pub mod exec;
 pub mod history;
+pub mod merge;
 pub mod model;
 pub mod paths;
 pub mod probe;

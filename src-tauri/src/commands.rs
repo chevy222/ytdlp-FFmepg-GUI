@@ -14,6 +14,7 @@ use ytdlp_core::download::{
     self, cleanup_on_cancel, post_process, probe_output, run_download, DownloadParams,
 };
 use ytdlp_core::model::{ItemKind, MediaItem, Status};
+use ytdlp_core::merge::{self, MergeParams};
 use ytdlp_core::transcode::{self, TranscodeParams};
 use ytdlp_core::probe::{self, ProbeErrorKind};
 use ytdlp_core::worker::SubmitOutcome;
@@ -488,6 +489,228 @@ fn prepare_cookies(state: &AppState, item: &MediaItem) -> Option<PathBuf> {
     store.export_netscape(&host, &tmp).ok().flatten()
 }
 
+/// 合并面板参数（MG-01/04：低频操作，仅面板内配置，不落 config.json）。
+#[derive(Debug, Clone)]
+pub struct MergeJob {
+    pub ids: Vec<String>,
+    pub filename: String,
+    pub container: String,
+    pub encoder_mode: String,
+}
+
+/// 批量合并（MG-01..04：多选按序拼接；参数在合并面板配置）。
+#[tauri::command]
+pub fn start_merge(
+    app: AppHandle,
+    ids: Vec<String>,
+    filename: Option<String>,
+    container: Option<String>,
+    encoder: Option<String>,
+) -> CmdResult<()> {
+    let state = app.state::<AppState>();
+    if ids.len() < 2 {
+        return Err("合并至少需要 2 个条目".into());
+    }
+    let mut jobs = Vec::new();
+    {
+        let mut hist = state.history.lock().unwrap();
+        for id in &ids {
+            let item = hist.get(id).cloned().ok_or("条目不存在")?;
+            let has_file = item
+                .path
+                .as_deref()
+                .map(|p| std::path::Path::new(p).is_file())
+                .unwrap_or(false);
+            if !has_file {
+                log_item(&app, id, "合并被跳过：无本地输入文件");
+                continue;
+            }
+            let to = match transition(item.status, Status::Merging) {
+                Ok(t) => t,
+                Err(e) => {
+                    log_item(&app, id, format!("合并被跳过：{}", e));
+                    continue;
+                }
+            };
+            hist.upsert(MediaItem {
+                status: to,
+                ..item.clone()
+            });
+            jobs.push(id.clone());
+        }
+    }
+    if jobs.len() < 2 {
+        return Err("可合并条目不足 2 个".into());
+    }
+    let job = MergeJob {
+        ids: jobs,
+        filename: filename.unwrap_or_else(default_merge_name),
+        container: container.unwrap_or_else(|| "mp4".into()),
+        encoder_mode: encoder.unwrap_or_else(|| "auto".into()),
+    };
+    for id in &job.ids {
+        state
+            .merge_jobs
+            .lock()
+            .unwrap()
+            .insert(id.clone(), job.clone());
+    }
+    for id in &job.ids {
+        let outcome = {
+            let mut q = state.queue.lock().unwrap();
+            q.submit(id)
+        };
+        if outcome == SubmitOutcome::Queued {
+            log_item(&app, id, "已排队，等待并发 slot…");
+        } else {
+            log_item(&app, id, "开始合并…");
+            let app2 = app.clone();
+            let id2 = id.clone();
+            std::thread::spawn(move || run_merge_task(app2, id2));
+        }
+    }
+    persist(&app);
+    Ok(())
+}
+
+/// 默认合并输出名：合并_<时间戳>（MG-06）。
+fn default_merge_name() -> String {
+    format!("合并_{}", today_stamp())
+}
+
+fn today_stamp() -> String {
+    let s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = (s / 86400) as i64 + 719_468;
+    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let doe = days - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{:04}{:02}{:02}", y, m, d)
+}
+
+/// 合并任务线程（提交队列后执行；进度经 `item:update` 回推）。
+fn run_merge_task(app: AppHandle, id: String) {
+    let state = app.state::<AppState>();
+    let cancel = state.register_cancel(&id);
+    let (inputs, params) = {
+        let job = state
+            .merge_jobs
+            .lock()
+            .unwrap()
+            .get(&id)
+            .cloned();
+        let Some(job) = job else { return };
+        let mut inputs = Vec::new();
+        let mut anchor = None;
+        {
+            let hist = state.history.lock().unwrap();
+            for jid in &job.ids {
+                if let Some(item) = hist.get(jid) {
+                    if anchor.is_none() {
+                        anchor = Some(item.clone());
+                    }
+                    if let Some(p) = &item.path {
+                        inputs.push(std::path::PathBuf::from(p));
+                    }
+                }
+            }
+        }
+        let cfg = state.config.lock().unwrap().clone();
+        let p = MergeParams {
+            inputs,
+            out_dir: default_output_dir(&state, &anchor.unwrap_or_else(|| MediaItem::new(ItemKind::MergeOut, "合并".into()))),
+            filename: job.filename.clone(),
+            container: job.container.clone(),
+            encoder_mode: job.encoder_mode.clone(),
+            low_power: cfg.transcode.low_power,
+            collision_policy: cfg.general.collision_policy.clone(),
+        };
+        (p.inputs.clone(), p)
+    };
+    if inputs.len() < 2 {
+        log_item(&app, &id, "合并输入不足，已取消");
+        let _ = state.merge_jobs.lock().unwrap().remove(&id);
+        return;
+    }
+    let app2 = app.clone();
+    let id2 = id.clone();
+    let result = merge::run_merge(
+        &state.resolver(),
+        &params,
+        &cancel,
+        move |pct| {
+            update_item(&app2, &id2, |it| {
+                it.percent = pct;
+            });
+        },
+        |line| log_item(&app, &id, line),
+    );
+    finish_merge(&app, &id, result);
+}
+
+/// 合并收尾：原条目恢复、产物作为新条目回列表、释放队列 slot。
+fn finish_merge(app: &AppHandle, id: &str, result: Result<std::path::PathBuf, CoreError>) {
+    let state = app.state::<AppState>();
+    let (orig_status, final_status) = match &result {
+        Ok(out) => {
+            log_item(app, id, format!("合并完成，产物回列表：{}", out.display()));
+            (restore_status(app, id), Status::Done)
+        }
+        Err(CoreError::Cancelled) => {
+            log_item(app, id, "合并已取消，清理残留");
+            (restore_status(app, id), Status::Canceled)
+        }
+        Err(e) => {
+            log_item(app, id, format!("合并失败：{}", e));
+            (restore_status(app, id), Status::Failed)
+        }
+    };
+    update_item(app, id, |it| {
+        it.status = orig_status;
+        it.percent = if final_status == Status::Done {
+            100.0
+        } else {
+            it.percent
+        };
+        if let Err(e) = &result {
+            it.error = Some(e.to_string());
+        }
+    });
+    if let Ok(out) = &result {
+        let meta = download::probe_output(&state.resolver(), out).unwrap_or_default();
+        let title = out
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "合并产物".into());
+        let mut prod = MediaItem::new(ItemKind::MergeOut, title);
+        prod.path = Some(out.to_string_lossy().into_owned());
+        prod.status = Status::Done;
+        prod.percent = 100.0;
+        prod.meta = meta;
+        prod.updated_at = now_str();
+        state.history.lock().unwrap().upsert(prod.clone());
+        let _ = app.emit("item:ready", serde_json::json!({ "id": prod.id }));
+        let _ = app.emit("list:changed", ());
+    }
+    state.merge_jobs.lock().unwrap().remove(id);
+    let next = {
+        let mut q = state.queue.lock().unwrap();
+        q.finish(id)
+    };
+    if let Some(next_id) = next {
+        launch_next(app, next_id);
+    }
+    persist(app);
+}
+
 /// 批量转码（TC-05：按 设置-转码/通用 默认参数执行，不弹确认窗）。
 #[tauri::command]
 pub fn start_transcode(app: AppHandle, ids: Vec<String>) -> CmdResult<()> {
@@ -675,6 +898,7 @@ fn launch_next(app: &AppHandle, next_id: String) {
         log_item(&app2, &next_id, "开始执行…");
         match item.status {
             Status::Transcoding => run_transcode_task(app2, next_id),
+            Status::Merging => run_merge_task(app2, next_id),
             _ => {
                 log_item(&app2, &next_id, "开始下载…");
                 let (fid, aonly) = (item.format_id.clone(), item.audio_only);

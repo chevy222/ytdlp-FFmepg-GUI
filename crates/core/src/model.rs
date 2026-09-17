@@ -161,6 +161,12 @@ pub struct MediaMeta {
     pub size_bytes: Option<u64>,
     /// 是否含封面
     pub has_cover: bool,
+    /// 视频流 extradata（SPS/PPS 等，hex）——合并直拼硬性条件（MG-02）
+    #[serde(default)]
+    pub extradata: Option<String>,
+    /// 首音频流采样率 Hz
+    #[serde(default)]
+    pub sample_rate: Option<u32>,
     /// URL 解析所得清晰度/格式列表（MD-01）
     pub formats: Vec<String>,
     /// 结构化下载格式列表（DL-02 格式选择；含 format_id 供下载使用）
@@ -428,6 +434,7 @@ pub fn transition(from: Status, to: Status) -> Result<Status, crate::CoreError> 
         | (Status::PostProcessing, Status::Failed)
         | (Status::PostProcessing, Status::Canceled)
         | (Status::Done, Status::Transcoding)
+        | (Status::Done, Status::Merging)
         | (Status::Transcoding, Status::Done)
         | (Status::Transcoding, Status::Failed)
         | (Status::Transcoding, Status::Canceled)

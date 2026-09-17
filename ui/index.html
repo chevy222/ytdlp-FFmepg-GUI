@@ -139,6 +139,22 @@
   .site-add:hover{background:#ccfbf1}
   .set-hd{font-size:12px;font-weight:600;color:var(--teal);padding:12px 0 4px}
   .modal.small .box{width:540px}
+  .merge-body{display:flex;gap:16px;padding:14px 18px;min-height:300px;overflow:auto}
+  .merge-left{flex:1;min-width:0;display:flex;flex-direction:column;gap:8px}
+  .merge-left h4{margin:0;font-size:13px;color:#334155}
+  .merge-list{list-style:none;margin:0;padding:0;border:1px solid var(--line);border-radius:10px;overflow:auto;min-height:200px}
+  .merge-row{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px dashed #eef2f7;font-size:13px}
+  .merge-row:last-child{border-bottom:none}
+  .merge-row .idx{flex:none;width:22px;height:22px;border-radius:6px;background:var(--teal-bg);color:var(--teal);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px}
+  .merge-row .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#334155}
+  .merge-row button{border:none;background:none;cursor:pointer;color:#64748b;padding:3px 5px;border-radius:6px;font-size:13px;line-height:1}
+  .merge-row button:hover{background:var(--teal-bg);color:var(--teal)}
+  .merge-row button.del:hover{background:#fef2f2;color:#dc2626}
+  .merge-right{width:280px;flex:none;display:flex;flex-direction:column;gap:10px}
+  .merge-warn{padding:10px 12px;border-radius:10px;font-size:12.5px;line-height:1.6}
+  .merge-warn.ok{background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0}
+  .merge-warn.warn{background:#fffbeb;color:#92400e;border:1px solid #fde68a}
+  .merge-right .set-row .k{flex:0 0 92px}
   .log-list{list-style:none;margin:0;padding:8px 16px;flex:1;overflow:auto;font-size:12px;font-family:Consolas,'Courier New',monospace;min-height:200px}
   .log-list li{padding:6px 2px;border-bottom:1px dashed #eef2f7;color:#475569;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .log-list li.err{color:#dc2626}
@@ -263,6 +279,39 @@
     <div class="hd"><span id="fmtTitle">选择下载格式</span><span class="sp"></span><button class="btn sm" onclick="closeFmt()">关闭</button></div>
     <ul class="fmt-list" id="fmtList"></ul>
     <div class="ft"><span class="sp"></span><button class="btn primary" id="btnFmtOk" onclick="fmtOk()">按所选格式下载</button></div>
+  </div>
+</div>
+
+<!-- ===== 合并面板（抽屉式，MG-01） ===== -->
+<div class="modal" id="mergeModal">
+  <div class="box">
+    <div class="hd"><span>合并 · 共 <b id="mergeCount">0</b> 段</span><span class="sp"></span><button class="btn sm" onclick="closeMerge()">关闭</button></div>
+    <div class="merge-body">
+      <div class="merge-left">
+        <h4>合并顺序（上移/下移调整）</h4>
+        <ul class="merge-list" id="mergeList"></ul>
+      </div>
+      <div class="merge-right">
+        <div class="merge-warn ok" id="mergeWarn">正在检查参数…</div>
+        <div class="set-row"><span class="k">输出文件名</span><input id="mergeName" type="text" spellcheck="false"></div>
+        <div class="set-row"><span class="k">容器</span>
+          <select id="mergeContainer">
+            <option value="mp4" selected>MP4（默认）</option>
+            <option value="mkv">MKV</option>
+          </select>
+        </div>
+        <div class="set-row"><span class="k">视频编码</span>
+          <select id="mergeEncoder">
+            <option value="auto" selected>自动（QSV → libx265）</option>
+            <option value="libx265">libx265（H.265）</option>
+            <option value="nvenc">NVENC H.265</option>
+            <option value="amf">AMF H.265</option>
+          </select>
+        </div>
+        <div style="font-size:12px;color:#94a3b8;line-height:1.6">参数不一致时按所选编码器统一转码后拼接；一致时零重编码直拼。</div>
+      </div>
+    </div>
+    <div class="ft"><span class="sp"></span><button class="btn primary" id="btnMergeOk">开始合并</button></div>
   </div>
 </div>
 
@@ -478,7 +527,7 @@ document.getElementById('btnTranscode').addEventListener('click',()=>{
   const ids=[...S.selected];
   INVOKE('start_transcode',{ids}).then(()=>{S.selected.clear();render();}).catch(err=>toast(err));
 });
-document.getElementById('btnMerge').addEventListener('click',()=>toast('合并能力在 M3 里程碑接入'));
+document.getElementById('btnMerge').addEventListener('click',openMerge);
 
 function addUrls(){
   const raw=document.getElementById('urlInput').value;
@@ -498,6 +547,63 @@ function rotItem(id,delta){
   render();
 }
 function batchRot(delta){ [...S.selected].forEach(id=>rotItem(id,delta)); }
+
+// ===== 合并面板（MG-01） =====
+let M = { ids: [] };
+function openMerge(){
+  if(S.selected.size<2){toast('合并至少需要勾选 2 个条目');return;}
+  M.ids=[...S.selected];
+  document.getElementById('mergeName').value='合并_'+ts8();
+  renderMerge();
+  document.getElementById('mergeModal').classList.add('show');
+}
+function closeMerge(){document.getElementById('mergeModal').classList.remove('show');}
+function ts8(){const d=new Date();return ''+d.getFullYear()+('0'+(d.getMonth()+1)).slice(-2)+('0'+d.getDate()).slice(-2);}
+function renderMerge(){
+  document.getElementById('mergeCount').textContent=M.ids.length;
+  document.getElementById('btnMergeOk').disabled=M.ids.length<2;
+  const byId={};S.items.forEach(i=>byId[i.id]=i);
+  document.getElementById('mergeList').innerHTML=M.ids.map((id,i)=>{
+    const it=byId[id]||{title:id};
+    return '<li class="merge-row"><span class="idx">'+(i+1)+'</span>'+
+      '<span class="t" title="'+esc(it.title)+'">'+esc(it.title)+'</span>'+
+      '<button title="上移" onclick="mvMerge('+i+',-1)">↑</button>'+
+      '<button title="下移" onclick="mvMerge('+i+',1)">↓</button>'+
+      '<button class="del" title="移除" onclick="rmMerge('+i+')">✕</button></li>';
+  }).join('');
+  mergeWarn();
+}
+function mvMerge(i,dir){
+  const j=i+dir;
+  if(j<0||j>=M.ids.length)return;
+  const t=M.ids[i];M.ids[i]=M.ids[j];M.ids[j]=t;renderMerge();
+}
+function rmMerge(i){M.ids.splice(i,1);renderMerge();
+  if(M.ids.length<2){document.getElementById('btnMergeOk').disabled=true;toast('合并至少需要 2 段');}
+}
+function mergeWarn(){
+  const el=document.getElementById('mergeWarn');
+  const byId={};S.items.forEach(i=>byId[i.id]=i);
+  const list=M.ids.map(id=>byId[id]).filter(Boolean);
+  const metas=list.map(it=>it.meta||{});
+  if(metas.length<2){el.className='merge-warn warn';el.textContent='部分条目尚未解析，无法对比参数。';return;}
+  const v=m=>m.vcodec+'|'+m.height+'|'+(m.fps?Math.round(m.fps*100):'')+'|'+m.acodec+'|'+(m.sample_rate||'');
+  const all=metas.every(m=>m&&m.vcodec&&m.height);
+  if(!all){el.className='merge-warn warn';el.textContent='缺少部分条目参数（编码/分辨率），合并将按统一模式处理。';return;}
+  const first=v(metas[0]);
+  const same=metas.every(m=>v(m)===first);
+  if(same){el.className='merge-warn ok';el.textContent='各段编码/分辨率/帧率/音频/采样率一致 → 零重编码直拼（速度最快，无损）。';}
+  else{el.className='merge-warn warn';el.textContent='检测到参数不一致（编码/分辨率/帧率/音频等）→ 将按所选编码器统一转码后拼接，耗时较长。';}
+}
+document.getElementById('btnMergeOk').addEventListener('click',()=>{
+  const ids=M.ids;
+  const filename=document.getElementById('mergeName').value.trim()||'合并_'+ts8();
+  const container=document.getElementById('mergeContainer').value;
+  const encoder=document.getElementById('mergeEncoder').value;
+  INVOKE('start_merge',{ids,filename,container,encoder})
+    .then(()=>{M.ids=[];S.selected.clear();render();closeMerge();toast('已开始合并');})
+    .catch(err=>toast(err));
+});
 
 // ===== 5 秒倒计时自动下载 =====
 function startCountdown(id){

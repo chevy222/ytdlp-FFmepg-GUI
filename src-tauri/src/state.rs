@@ -18,6 +18,8 @@ pub struct AppState {
     pub queue: Mutex<TaskQueue>,
     /// 任务取消标志注册表（id -> flag）
     pub cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// 合并面板参数（入队等待时保存；低频操作，仅面板内配置，不落 config）
+    pub merge_jobs: Mutex<HashMap<String, crate::commands::MergeJob>>,
 }
 
 impl AppState {
@@ -33,6 +35,7 @@ impl AppState {
             config: Mutex::new(config),
             queue: Mutex::new(TaskQueue::new(concurrency)),
             cancels: Mutex::new(HashMap::new()),
+            merge_jobs: Mutex::new(HashMap::new()),
         }
     }
 

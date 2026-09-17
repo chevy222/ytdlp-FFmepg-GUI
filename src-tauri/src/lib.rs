@@ -21,6 +21,7 @@ pub fn run() {
             commands::get_item,
             commands::start_download,
             commands::start_transcode,
+            commands::start_merge,
             commands::cancel_item,
             commands::remove_item,
             commands::clear_done,

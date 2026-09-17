@@ -305,7 +305,7 @@ pub fn build_args(resolver: &ToolResolver, params: &TranscodeParams, meta: &Medi
 }
 
 /// 解析 `-progress` 输出中的 `out_time_us=`（微秒）。
-fn parse_out_time_us(line: &str) -> Option<u64> {
+pub(crate) fn parse_out_time_us(line: &str) -> Option<u64> {
     let line = line.trim();
     if let Some(v) = line.strip_prefix("out_time_us=") {
         return v.trim().parse().ok();

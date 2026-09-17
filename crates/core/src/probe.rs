@@ -332,6 +332,7 @@ pub fn parse_ffprobe_json(text: &str) -> MediaMeta {
                     .as_str()
                     .and_then(|b| b.parse::<f64>().ok())
                     .map(|b| (b / 1000.0) as u32);
+                meta.extradata = s["extradata"].as_str().map(str::to_string);
                 if s["disposition"]["attached_pic"].as_u64() == Some(1)
                     || s["disposition"]["attached_pic"].as_str() == Some("1")
                 {
@@ -356,6 +357,9 @@ pub fn parse_ffprobe_json(text: &str) -> MediaMeta {
                         .as_str()
                         .and_then(|b| b.parse::<f64>().ok())
                         .map(|b| (b / 1000.0) as u32);
+                    meta.sample_rate = s["sample_rate"]
+                        .as_str()
+                        .and_then(|r| r.parse().ok());
                 }
             }
             _ => {}
