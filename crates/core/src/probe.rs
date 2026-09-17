@@ -59,6 +59,81 @@ pub struct LocalProbe {
     pub meta: MediaMeta,
 }
 
+/// 播放列表单集条目（DL-09 平铺）。
+#[derive(Debug, Clone)]
+pub struct PlaylistEntry {
+    pub url: String,
+    pub title: String,
+}
+
+/// 展开播放列表（yt-dlp -J --flat-playlist）：快速拿每集 URL 与标题，
+/// 命令层据此逐条平铺进统一列表。
+pub fn list_playlist_entries(
+    resolver: &ToolResolver,
+    url: &str,
+    cookies_file: Option<&Path>,
+    network: &NetworkConfig,
+) -> std::result::Result<Vec<PlaylistEntry>, ProbeFailure> {
+    let mut cmd = resolver.command(Tool::YtDlp).map_err(|e| ProbeFailure {
+        kind: ProbeErrorKind::Failed,
+        message: e.to_string(),
+    })?;
+    cmd.arg("-J").arg("--flat-playlist").arg("--no-warnings");
+    if let Some(cf) = cookies_file {
+        cmd.arg("--cookies").arg(cf);
+    }
+    let proxy = if network.proxy_url.is_empty() {
+        None
+    } else {
+        Some(network.proxy_url.as_str())
+    };
+    if let Some(p) = proxy {
+        cmd.arg("--proxy").arg(p);
+    }
+    cmd.arg(url);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let guard = ChildGuard::spawn(&mut cmd).map_err(|e| ProbeFailure {
+        kind: ProbeErrorKind::Failed,
+        message: format!("启动 yt-dlp 失败：{}", e),
+    })?;
+    let output = guard.wait_with_output().map_err(|e| ProbeFailure {
+        kind: ProbeErrorKind::Failed,
+        message: format!("yt-dlp 退出异常：{}", e),
+    })?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        let mut f = classify_ytdlp_error(&err);
+        f.message = format!("获取播放列表失败：{}", err.trim());
+        return Err(f);
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let v: Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(_) => {
+            return Err(ProbeFailure {
+                kind: ProbeErrorKind::Failed,
+                message: "yt-dlp 返回无法解析的播放列表数据".into(),
+            })
+        }
+    };
+    let mut out = Vec::new();
+    if let Some(entries) = v["entries"].as_array() {
+        for e in entries {
+            let u = e["url"]
+                .as_str()
+                .or_else(|| e["webpage_url"].as_str())
+                .unwrap_or_default()
+                .to_string();
+            if u.is_empty() {
+                continue;
+            }
+            let title = e["title"].as_str().unwrap_or("").to_string();
+            out.push(PlaylistEntry { url: u, title });
+        }
+    }
+    Ok(out)
+}
+
 /// 解析失败（分类 + 摘要）。
 #[derive(Debug, Clone)]
 pub struct ProbeFailure {
@@ -79,12 +154,18 @@ pub fn probe_url(
     url: &str,
     cookies_file: Option<&Path>,
     network: &NetworkConfig,
+    playlist: bool,
 ) -> std::result::Result<UrlProbe, ProbeFailure> {
     let mut cmd = resolver.command(Tool::YtDlp).map_err(|e| ProbeFailure {
         kind: ProbeErrorKind::Failed,
         message: e.to_string(),
     })?;
-    cmd.arg("-J").arg("--no-playlist").arg("--no-warnings");
+    cmd.arg("-J").arg("--no-warnings");
+    if playlist {
+        cmd.arg("--yes-playlist");
+    } else {
+        cmd.arg("--no-playlist");
+    }
     if let Some(cf) = cookies_file {
         cmd.arg("--cookies").arg(cf);
     }

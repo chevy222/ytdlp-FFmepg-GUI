@@ -57,6 +57,7 @@ pub fn run() {
             commands::open_item_dir,
             commands::clear_temp,
             commands::rot_item,
+            commands::set_sections,
         ])
         .setup(|app| {
             // 确保绿色便携目录结构（exe 同级）

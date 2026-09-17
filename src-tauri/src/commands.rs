@@ -9,11 +9,13 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 use ytdlp_core::config::AppConfig;
+use ytdlp_core::exec::ToolResolver;
 use ytdlp_core::cookies::CookieStore;
 use ytdlp_core::download::{
     self, cleanup_on_cancel, post_process, probe_output, run_download, DownloadParams,
 };
 use ytdlp_core::model::{ItemKind, MediaItem, Status};
+use ytdlp_core::config::NetworkConfig;
 use ytdlp_core::merge::{self, MergeParams};
 use ytdlp_core::transcode::{self, TranscodeParams};
 use ytdlp_core::probe::{self, ProbeErrorKind};
@@ -161,12 +163,14 @@ fn run_probe(app: AppHandle, id: String) {
     let network = state.config.lock().unwrap().network.clone();
     let netscape = resolve_cookies(&state, &item);
 
+    let playlist_on = state.config.lock().unwrap().download.playlist;
     let result = if item.url.is_some() {
         probe::probe_url(
             &resolver,
             item.url.as_deref().unwrap_or_default(),
             netscape.as_deref(),
             &network,
+            playlist_on,
         )
     } else {
         let path = item.path.clone().unwrap_or_default();
@@ -208,6 +212,10 @@ fn run_probe(app: AppHandle, id: String) {
             // URL 已就绪：触发 5 秒倒计时自动下载（前端计时，后端只发可下载信号）
             if url_src {
                 let _ = app.emit("item:ready", serde_json::json!({ "id": id }));
+            }
+            // 播放列表（DL-09）：开启时把合集展开为逐集条目平铺进列表
+            if url_src && playlist_on && p.is_playlist {
+                expand_playlist(&app, &id, &item, &resolver, netscape.as_deref(), &network);
             }
         }
         Err(f) => {
@@ -287,7 +295,7 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
     let state = app.state::<AppState>();
     let cancel = state.register_cancel(&id);
 
-    let (url, cfg, general, resolver, out_dir, template, proxy, netscape) = {
+    let (url, cfg, general, resolver, out_dir, template, proxy, netscape, sections) = {
         let hist = state.history.lock().unwrap();
         let item = hist.get(&id).cloned();
         let Some(item) = item else { return };
@@ -299,8 +307,9 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
         let template = cfg.filename_template.clone();
         let proxy = state.config.lock().unwrap().network.proxy_url.clone();
         let netscape = prepare_cookies(&state, &item);
+        let sections = item.sections.clone();
         (
-            url, cfg, general, resolver, out_dir, template, proxy, netscape,
+            url, cfg, general, resolver, out_dir, template, proxy, netscape, sections,
         )
     };
 
@@ -312,7 +321,7 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
         embed_cover: cfg.embed_cover,
         proxy: Some(proxy),
         cookies_file: netscape,
-        sections: None,
+        sections,
     };
 
     let app2 = app.clone();
@@ -491,6 +500,7 @@ pub struct MergeJob {
     pub filename: String,
     pub container: String,
     pub encoder_mode: String,
+    pub normalize_audio: bool,
 }
 
 /// 批量合并（MG-01..04：多选按序拼接；参数在合并面板配置）。
@@ -501,6 +511,7 @@ pub fn start_merge(
     filename: Option<String>,
     container: Option<String>,
     encoder: Option<String>,
+    normalize: Option<bool>,
 ) -> CmdResult<()> {
     let state = app.state::<AppState>();
     if ids.len() < 2 {
@@ -537,11 +548,15 @@ pub fn start_merge(
     if jobs.len() < 2 {
         return Err("可合并条目不足 2 个".into());
     }
+    let norm = normalize.unwrap_or_else(|| {
+        state.config.lock().unwrap().general.normalize_audio
+    });
     let job = MergeJob {
         ids: jobs,
         filename: filename.unwrap_or_else(default_merge_name),
         container: container.unwrap_or_else(|| "mp4".into()),
         encoder_mode: encoder.unwrap_or_else(|| "auto".into()),
+        normalize_audio: norm,
     };
     for id in &job.ids {
         state
@@ -627,6 +642,8 @@ fn run_merge_task(app: AppHandle, id: String) {
             encoder_mode: job.encoder_mode.clone(),
             low_power: cfg.transcode.low_power,
             collision_policy: cfg.general.collision_policy.clone(),
+            normalize_audio: job.normalize_audio,
+            max_gain_db: cfg.general.max_gain_db,
         };
         (p.inputs.clone(), p)
     };
@@ -706,6 +723,47 @@ fn finish_merge(app: &AppHandle, id: &str, result: Result<std::path::PathBuf, Co
     persist(app);
 }
 
+/// 设置时间范围下载（DL-12）：起止 "HH:MM:SS"；空串清除。
+#[tauri::command]
+pub fn set_sections(app: AppHandle, id: String, start: String, end: String) -> CmdResult<()> {
+    let valid = |t: &str| {
+        if t.is_empty() {
+            return true;
+        }
+        let parts: Vec<&str> = t.split(':').collect();
+        if parts.len() != 3 {
+            return false;
+        }
+        parts.iter().all(|p| {
+            !p.is_empty()
+                && p.chars().all(|c| c.is_ascii_digit())
+                && p.len() <= 2
+        })
+    };
+    if !valid(&start) || !valid(&end) {
+        return Err("时间格式应为 HH:MM:SS（如 00:01:00）".into());
+    }
+    let sections = if start.is_empty() && end.is_empty() {
+        None
+    } else {
+        Some((start, end))
+    };
+    let state = app.state::<AppState>();
+    update_item(&app, &id, |it| {
+        it.sections = sections.clone();
+        match &sections {
+            Some((s, e)) => {
+                it.push_log(format!("已设置时间范围下载：{} - {}", s, e));
+            }
+            None => {
+                it.push_log("已清除时间范围".to_string());
+            }
+        }
+    });
+    state.persist();
+    Ok(())
+}
+
 /// 批量转码（TC-05：按 设置-转码/通用 默认参数执行，不弹确认窗）。
 #[tauri::command]
 pub fn start_transcode(app: AppHandle, ids: Vec<String>) -> CmdResult<()> {
@@ -755,6 +813,42 @@ pub fn start_transcode(app: AppHandle, ids: Vec<String>) -> CmdResult<()> {
     }
     persist(&app);
     Ok(())
+}
+
+/// 播放列表展开（DL-09）：flat-playlist 拿每集 URL，逐条作为独立条目解析平铺。
+fn expand_playlist(
+    app: &AppHandle,
+    id: &str,
+    item: &MediaItem,
+    resolver: &ToolResolver,
+    cookies: Option<&Path>,
+    network: &NetworkConfig,
+) {
+    let url = item.url.clone().unwrap_or_default();
+    if url.is_empty() {
+        return;
+    }
+    match probe::list_playlist_entries(resolver, &url, cookies, network) {
+        Ok(entries) => {
+            let n = entries.len();
+            log_item(app, id, format!("播放列表展开：{} 集", n));
+            let app2 = app.clone();
+            for e in entries {
+                let entry = MediaItem::from_url(e.url);
+                let eid = entry.id.clone();
+                {
+                    let st = app2.state::<AppState>();
+                    let mut hist = st.history.lock().unwrap();
+                    hist.upsert(entry);
+                }
+                let app3 = app2.clone();
+                std::thread::spawn(move || run_probe(app3, eid));
+            }
+        }
+        Err(f) => {
+            log_item(app, id, format!("播放列表展开失败：{}", f.message));
+        }
+    }
 }
 
 /// 转码任务线程（提交队列后执行；进度经 `item:update` 回推）。

@@ -308,10 +308,24 @@
             <option value="amf">AMF H.265</option>
           </select>
         </div>
-        <div style="font-size:12px;color:#94a3b8;line-height:1.6">参数不一致时按所选编码器统一转码后拼接；一致时零重编码直拼。</div>
+        <div class="set-row"><span class="k">合并后音量归一化</span><label class="chk"><input type="checkbox" id="mergeNorm"></label></div>
+        <div style="font-size:12px;color:#94a3b8;line-height:1.6">参数不一致时按所选编码器统一转码后拼接；一致时零重编码直拼。归一化与设置-通用共用增益上限。</div>
       </div>
     </div>
     <div class="ft"><span class="sp"></span><button class="btn primary" id="btnMergeOk">开始合并</button></div>
+  </div>
+</div>
+
+<!-- ===== 时间范围剪辑（DL-12） ===== -->
+<div class="modal small" id="secModal">
+  <div class="box">
+    <div class="hd"><span>时间范围下载</span><span class="sp"></span><button class="btn sm" onclick="closeSec()">关闭</button></div>
+    <div class="bd" style="display:block;padding:16px 18px">
+      <div class="set-row"><span class="k">开始</span><input id="secStart" type="text" placeholder="00:00:00 留空=从头" spellcheck="false"></div>
+      <div class="set-row"><span class="k">结束</span><input id="secEnd" type="text" placeholder="00:01:00 留空=到结尾" spellcheck="false"></div>
+      <div style="font-size:12px;color:#94a3b8;margin-top:6px">格式 HH:MM:SS，下载时只保留该时间段（yt-dlp --download-sections）。清空两项可移除设置。</div>
+    </div>
+    <div class="ft"><span class="sp"></span><button class="btn primary" id="btnSecOk">保存</button></div>
   </div>
 </div>
 
@@ -382,6 +396,7 @@ function ops(it){
   let h='<div class="ops">';
   const cd = (S.cdTimer[it.id] && s==='Ready' && it.kind==='UrlTask') ? '<span class="countdown">'+S.cdTimer[it.id]+'s 后自动下载</span>' : '';
   if (it.kind==='UrlTask' && s==='Ready') h += cd + '<button class="btn sm primary" data-act="dl" data-id="'+id+'">下载</button>';
+  if (it.kind==='UrlTask' && s==='Ready') h += '<button class="btn sm" data-act="sec" data-id="'+id+'">剪辑</button>';
   if ((s==='Ready'||s==='Done') && it.path) h += '<button class="btn sm" data-act="tc" data-id="'+id+'">转码</button>';
   if (s==='NeedLogin') h += '<button class="btn sm" data-act="relogin" data-id="'+id+'">去登录</button>';
   if (s==='Downloading'||s==='PostProcessing'||s==='Transcoding'||s==='Merging') h += '<button class="btn sm danger" data-act="cancel" data-id="'+id+'">取消</button>';
@@ -487,6 +502,7 @@ document.getElementById('tbody').addEventListener('click', e=>{
   else if(a==='open')INVOKE('open_item_dir',{id}).catch(err=>toast(err));
   else if(a==='log'||a==='err')openLog(id);
   else if(a==='fmt')openFmt(id);
+  else if(a==='sec')openSec(id);
   else if(a==='rotcw'||a==='rotccw')rotItem(id,a==='rotcw'?90:-90);
 });
 document.getElementById('tbody').addEventListener('change', e=>{
@@ -554,6 +570,7 @@ function openMerge(){
   if(S.selected.size<2){toast('合并至少需要勾选 2 个条目');return;}
   M.ids=[...S.selected];
   document.getElementById('mergeName').value='合并_'+ts8();
+  document.getElementById('mergeNorm').checked = !!(S.config&&S.config.general&&S.config.general.normalize_audio);
   renderMerge();
   document.getElementById('mergeModal').classList.add('show');
 }
@@ -600,7 +617,8 @@ document.getElementById('btnMergeOk').addEventListener('click',()=>{
   const filename=document.getElementById('mergeName').value.trim()||'合并_'+ts8();
   const container=document.getElementById('mergeContainer').value;
   const encoder=document.getElementById('mergeEncoder').value;
-  INVOKE('start_merge',{ids,filename,container,encoder})
+  const normalize=document.getElementById('mergeNorm').checked;
+  INVOKE('start_merge',{ids,filename,container,encoder,normalize})
     .then(()=>{M.ids=[];S.selected.clear();render();closeMerge();toast('已开始合并');})
     .catch(err=>toast(err));
 });
@@ -641,6 +659,25 @@ function fmtOk(){
   closeFmt();
 }
 function closeFmt(){document.getElementById('fmtModal').classList.remove('show');fmtId=null;}
+
+// ===== 时间范围剪辑（DL-12） =====
+let secId=null;
+function openSec(id){
+  const it=S.items.find(i=>i.id===id); if(!it)return;
+  secId=id;
+  document.getElementById('secStart').value=(it.sections&&it.sections[0])||'';
+  document.getElementById('secEnd').value=(it.sections&&it.sections[1])||'';
+  document.getElementById('secModal').classList.add('show');
+}
+function closeSec(){document.getElementById('secModal').classList.remove('show');secId=null;}
+document.getElementById('btnSecOk').addEventListener('click',()=>{
+  if(!secId)return;
+  const start=document.getElementById('secStart').value.trim();
+  const end=document.getElementById('secEnd').value.trim();
+  INVOKE('set_sections',{id:secId,start,end})
+    .then(()=>{closeSec();render();toast(start||end?'已设置时间范围':'已清除时间范围');})
+    .catch(err=>toast(err));
+});
 
 // ===== 日志 =====
 let logId=null;

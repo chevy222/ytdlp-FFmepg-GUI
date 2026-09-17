@@ -334,6 +334,9 @@ pub struct MediaItem {
     pub persist: bool,
     #[serde(default)]
     pub updated_at: String,
+    /// 时间范围下载（DL-12）：起止 "HH:MM:SS"（yt-dlp --download-sections）
+    #[serde(default)]
+    pub sections: Option<(String, String)>,
 }
 
 impl MediaItem {
@@ -348,6 +351,7 @@ impl MediaItem {
             host: None,
             status: Status::Probing,
             percent: 0.0,
+            sections: None,
             error: None,
             speed: None,
             eta: None,

@@ -29,6 +29,9 @@ pub struct MergeParams {
     pub encoder_mode: String,
     pub low_power: bool,
     pub collision_policy: String,
+    /// 合并后可选后处理：音量归一化（MG-05，面板开关）
+    pub normalize_audio: bool,
+    pub max_gain_db: f32,
 }
 
 impl MergeParams {
@@ -326,6 +329,9 @@ pub fn run_merge(
         let _ = std::fs::remove_file(out);
     };
     let result = (|| -> Result<PathBuf> {
+        if params.normalize_audio {
+            on_log("合并完成前做音量归一化…".into());
+        }
         if same {
             // 模式 A：concat 直拼
             let list = tmp.join("list.txt");
@@ -407,8 +413,21 @@ pub fn run_merge(
     })();
 
     match result {
-        Ok(o) => {
+        Ok(mut o) => {
             let _ = std::fs::remove_dir_all(&tmp);
+            if params.normalize_audio {
+                match post_normalize(resolver, &o, params.max_gain_db, cancel, &mut on_log) {
+                    Ok(n) => o = n,
+                    Err(CoreError::Cancelled) => {
+                        let _ = std::fs::remove_file(&o);
+                        on_log("音量归一化已取消，清理输出".into());
+                        return Err(CoreError::Cancelled);
+                    }
+                    Err(e) => {
+                        on_log(format!("音量归一化失败，保留合并产物：{}", e));
+                    }
+                }
+            }
             on_log(format!("合并完成：{}", o.display()));
             Ok(o)
         }
@@ -423,6 +442,59 @@ pub fn run_merge(
             Err(e)
         }
     }
+}
+
+/// 合并产物音量归一化（MG-05）：probe 音量 → 增益至峰值 0dBFS（不超过上限），
+/// 视频流 copy、音频重编码 aac；输出临时文件后原子替换。
+fn post_normalize(
+    resolver: &ToolResolver,
+    input: &Path,
+    max_gain_db: f32,
+    cancel: &Arc<AtomicBool>,
+    on_log: &mut dyn FnMut(String),
+) -> Result<PathBuf> {
+    let meta = crate::download::probe_output(resolver, input)?;
+    let Some(max_v) = meta.audio_volume.max_volume_db else {
+        return Ok(input.to_path_buf());
+    };
+    if max_v >= -0.5 || max_v <= -100.0 {
+        return Ok(input.to_path_buf());
+    }
+    let gain = (-max_v).clamp(0.0, max_gain_db);
+    if gain < 0.1 {
+        return Ok(input.to_path_buf());
+    }
+    let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("mp4");
+    let tmp = input.with_extension(format!("norm_tmp.{}", ext));
+    let args: Vec<String> = vec![
+        "-hide_banner".into(),
+        "-i".into(),
+        input.to_string_lossy().into_owned(),
+        "-map".into(),
+        "0".into(),
+        "-c:v".into(),
+        "copy".into(),
+        "-c:a".into(),
+        "aac".into(),
+        "-af".into(),
+        format!("volume={:.2}dB", gain),
+        "-movflags".into(),
+        "+faststart".into(),
+        "-y".into(),
+        tmp.to_string_lossy().into_owned(),
+    ];
+    on_log(format!("音量归一化：+{:.1}dB", gain));
+    run_piped_progress(resolver, args, cancel, 0.0, &mut |_| {}, on_log)?;
+    if !tmp.exists() {
+        return Err(CoreError::ProcessFailed {
+            program: "ffmpeg".into(),
+            code: None,
+            stderr: "音量归一化未生成输出".into(),
+        });
+    }
+    let _ = std::fs::remove_file(input);
+    std::fs::rename(&tmp, input)?;
+    Ok(input.to_path_buf())
 }
 
 fn write_concat_list(path: &Path, inputs: &[PathBuf]) -> Result<()> {
@@ -511,6 +583,8 @@ mod tests {
             encoder_mode: "auto".into(),
             low_power: false,
             collision_policy: "auto_inc".into(),
+            normalize_audio: false,
+            max_gain_db: 24.0,
         };
         let a = output_path(&p).unwrap();
         std::fs::write(&a, b"x").unwrap();
@@ -529,6 +603,8 @@ mod tests {
             encoder_mode: "auto".into(),
             low_power: false,
             collision_policy: "skip".into(),
+            normalize_audio: false,
+            max_gain_db: 24.0,
         };
         let a = output_path(&p).unwrap();
         std::fs::write(&a, b"x").unwrap();
