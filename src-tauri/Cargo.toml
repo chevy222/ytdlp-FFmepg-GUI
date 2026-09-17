@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 description = "ytdlp-FFmpeg-GUI（影栈）：下载/转码/合并一体的本地视频工具箱"
 
+[[bin]]
+name = "ytdlp-FFmpeg-GUI"
+path = "src/main.rs"
+
 [lib]
 name = "ytdlp_gui_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
@@ -18,3 +22,7 @@ tauri = { version = "2", features = [] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ytdlp-core = { path = "../crates/core" }
+url = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.30"

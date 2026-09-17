@@ -1,0 +1,759 @@
+//! Tauri 命令层：统一列表 CRUD + 解析/下载/取消/删除 + 配置 + Cookie + 依赖自检。
+//!
+//! 后台任务用 std::thread + 事件 `item:update`（payload = MediaItem）回推前端；
+//! 关键状态变更才持久化 history.json（进度高频更新只 emit 不落盘）。
+
+use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+
+use tauri::{AppHandle, Manager, State};
+use ytdlp_core::config::AppConfig;
+use ytdlp_core::cookies::CookieStore;
+use ytdlp_core::download::{
+    self, cleanup_on_cancel, post_process, probe_output, run_download, DownloadParams,
+};
+use ytdlp_core::exec::ToolResolver;
+use ytdlp_core::history::History;
+use ytdlp_core::model::{ItemKind, MediaItem, Status};
+use ytdlp_core::probe::{self, ProbeErrorKind};
+use ytdlp_core::worker::SubmitOutcome;
+use ytdlp_core::{transition, CoreError};
+
+use crate::login;
+use crate::state::AppState;
+
+/// 依赖自检项（前端显示）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ToolStatus {
+    pub tool: String,
+    pub path: Option<String>,
+    pub version: Option<String>,
+    pub ok: bool,
+}
+
+type CmdResult<T> = Result<T, String>;
+
+fn err_string(e: impl std::fmt::Display) -> String {
+    e.to_string()
+}
+
+/// 更新条目并返回克隆（变更即原子写仅对状态迁移生效由调用方决定）。
+fn update_item(app: &AppHandle, id: &str, f: impl FnOnce(&mut MediaItem)) -> Option<MediaItem> {
+    let state = app.state::<AppState>();
+    let mut hist = state.history.lock().unwrap();
+    let item = hist.get(id)?.clone();
+    let mut item = item;
+    f(&mut item);
+    hist.upsert(item.clone());
+    drop(hist);
+    let _ = app.emit("item:update", &item);
+    Some(item)
+}
+
+fn emit(app: &AppHandle, item: &MediaItem) {
+    let _ = app.emit("item:update", item);
+}
+
+/// 记录日志行并 emit。
+fn log_item(app: &AppHandle, id: &str, line: impl Into<String>) {
+    update_item(app, id, |it| {
+        it.push_log(line);
+    });
+}
+
+/// 持久化（状态迁移后调用）。
+fn persist(app: &AppHandle) {
+    app.state::<AppState>().persist();
+}
+
+// ---------- 添加与解析 ----------
+
+#[tauri::command]
+pub fn add_url(app: AppHandle, urls: Vec<String>) -> CmdResult<()> {
+    let state = app.state::<AppState>();
+    let mut hist = state.history.lock().unwrap();
+    for raw in urls {
+        let url = clean_url(&raw);
+        if url.is_empty() {
+            continue;
+        }
+        let item = MediaItem::from_url(url);
+        let id = item.id.clone();
+        hist.upsert(item);
+        // 解析线程不占并发 slot
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            run_probe(app2, id);
+        });
+    }
+    drop(hist);
+    persist(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn add_local(app: AppHandle, paths: Vec<String>, recursive: bool) -> CmdResult<()> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    for p in paths {
+        let pb = PathBuf::from(&p);
+        if pb.is_dir() {
+            scan_dir(&pb, recursive, &mut files);
+        } else if pb.is_file() {
+            files.push(pb);
+        }
+    }
+    if files.is_empty() {
+        return Err("没有找到可添加的文件".into());
+    }
+    let state = app.state::<AppState>();
+    let mut hist = state.history.lock().unwrap();
+    for f in files {
+        let item = MediaItem::from_path(f.to_string_lossy().into_owned());
+        let id = item.id.clone();
+        hist.upsert(item);
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            run_probe(app2, id);
+        });
+    }
+    drop(hist);
+    persist(&app);
+    Ok(())
+}
+
+fn scan_dir(dir: &Path, recursive: bool, out: &mut Vec<PathBuf>) {
+    let rd = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(_) => return,
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            if recursive {
+                scan_dir(&p, true, out);
+            }
+        } else if download::is_video_file(&p) {
+            out.push(p);
+        }
+    }
+}
+
+/// URL 清洗（DL-01）：去引号/空白，抖音 modal_id 归一化由 yt-dlp 处理。
+fn clean_url(raw: &str) -> String {
+    raw.trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim()
+        .to_string()
+}
+
+/// 解析任务（URL 或本地；阻塞运行在线程中）。
+fn run_probe(app: AppHandle, id: String) {
+    let state = app.state::<AppState>();
+    let item = {
+        let hist = state.history.lock().unwrap();
+        hist.get(&id).cloned()
+    };
+    let Some(mut item) = item else {
+        return;
+    };
+    log_item(&app, &id, "开始解析元数据…");
+
+    let resolver = state.resolver();
+    let network = state.config.lock().unwrap().network.clone();
+    let cookies_store = CookieStore::new(state.paths.cookies_dir());
+    let cookie_file = item
+        .host
+        .clone()
+        .or_else(|| {
+            item.url
+                .as_deref()
+                .and_then(ytdlp_core::cookies::host_from_url)
+        })
+        .and_then(|h| cookies_store.match_file(&h));
+
+    // 导出 netscape 临时文件
+    let mut netscape: Option<PathBuf> = None;
+    if let Some(host) = item.host.clone().or_else(|| {
+        item.url
+            .as_deref()
+            .and_then(ytdlp_core::cookies::host_from_url)
+    }) {
+        let tmp = state.paths.temp_dir().join(format!("cookies-{}.txt", host));
+        if let Ok(Some(p)) = cookies_store.export_netscape(&host, &tmp) {
+            netscape = Some(p);
+        }
+    }
+    let _ = cookie_file;
+
+    let result = if item.url.is_some() {
+        probe::probe_url(
+            &resolver,
+            item.url.as_deref().unwrap_or_default(),
+            netscape.as_deref(),
+            &network,
+        )
+    } else {
+        let path = item.path.clone().unwrap_or_default();
+        probe::probe_local(&resolver, Path::new(&path)).map(|p| {
+            let mut mp = p;
+            let title = item.title.clone();
+            mp.meta.title = Some(title);
+            ytdlp_core::probe::UrlProbe {
+                meta: mp.meta,
+                site: Some("本地文件".into()),
+                host: None,
+                needs_login: false,
+                is_playlist: false,
+                playlist_count: None,
+                thumbnail_url: None,
+            }
+        })
+    };
+
+    match result {
+        Ok(p) => {
+            let url_src = item.url.is_some();
+            update_item(&app, &id, |it| {
+                it.meta = p.meta;
+                it.site = p.site.clone();
+                if p.host.is_some() {
+                    it.host = p.host.clone();
+                }
+                it.status = Status::Ready;
+                it.percent = 0.0;
+                it.error = None;
+                it.push_log("解析完成，已就绪".to_string());
+                if url_src {
+                    it.push_log(format!("可用格式：{} 项", it.meta.download_formats.len()));
+                }
+                let _ = &p.is_playlist;
+                let _ = p.playlist_count;
+            });
+            // URL 已就绪：触发 5 秒倒计时自动下载（前端计时，后端只发可下载信号）
+            if url_src {
+                let _ = app.emit("item:ready", serde_json::json!({ "id": id }));
+            }
+        }
+        Err(f) => {
+            let status = if f.kind == ProbeErrorKind::NeedLogin {
+                Status::NeedLogin
+            } else {
+                Status::Failed
+            };
+            update_item(&app, &id, |it| {
+                it.status = status;
+                it.error = Some(f.to_string());
+                it.push_log(format!("解析失败：{}", f));
+            });
+        }
+    }
+    persist(&app);
+}
+
+// ---------- 列表 ----------
+
+#[tauri::command]
+pub fn list_items(state: State<'_, AppState>) -> CmdResult<Vec<MediaItem>> {
+    let hist = state.history.lock().unwrap();
+    Ok(hist.items.clone())
+}
+
+#[tauri::command]
+pub fn get_item(state: State<'_, AppState>, id: String) -> CmdResult<MediaItem> {
+    let hist = state.history.lock().unwrap();
+    hist.get(&id)
+        .cloned()
+        .ok_or_else(|| format!("条目不存在：{}", id))
+}
+
+// ---------- 动作 ----------
+
+#[tauri::command]
+pub fn start_download(
+    app: AppHandle,
+    id: String,
+    format_id: Option<String>,
+    audio_only: bool,
+) -> CmdResult<()> {
+    let state = app.state::<AppState>();
+    {
+        let mut hist = state.history.lock().unwrap();
+        let item = hist.get(&id).cloned().ok_or("条目不存在")?;
+        if item.status != Status::Ready {
+            return Err(format!("当前状态不可下载：{}", item.status.label()));
+        }
+        let new_status = transition(item.status, Status::Downloading).map_err(err_string)?;
+        hist.upsert(MediaItem {
+            status: new_status,
+            ..item.clone()
+        });
+    }
+    // 提交并发队列
+    let outcome = {
+        let mut q = state.queue.lock().unwrap();
+        q.submit(&id)
+    };
+    if outcome == SubmitOutcome::Queued {
+        log_item(&app, &id, "已排队，等待并发 slot…");
+        persist(&app);
+        return Ok(());
+    }
+    log_item(&app, &id, "开始下载…");
+    persist(&app);
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        run_download_task(app2, id, format_id, audio_only);
+    });
+    Ok(())
+}
+
+fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audio_only: bool) {
+    let state = app.state::<AppState>();
+    let cancel = state.register_cancel(&id);
+
+    let (url, cfg, general, resolver, out_dir, template, proxy, netscape) = {
+        let hist = state.history.lock().unwrap();
+        let item = hist.get(&id).cloned();
+        let Some(item) = item else { return };
+        let url = item.url.clone().unwrap_or_default();
+        let cfg = state.config.lock().unwrap().download.clone();
+        let general = state.config.lock().unwrap().general.clone();
+        let resolver = state.resolver();
+        let out_dir = default_output_dir(&state, &item);
+        let template = cfg.filename_template.clone();
+        let proxy = state.config.lock().unwrap().network.proxy_url.clone();
+        let netscape = prepare_cookies(&state, &item);
+        (
+            url, cfg, general, resolver, out_dir, template, proxy, netscape,
+        )
+    };
+
+    let params = DownloadParams {
+        format_id: format_id.clone(),
+        audio_only,
+        out_dir: out_dir.clone(),
+        filename_template: template,
+        embed_cover: cfg.embed_cover,
+        proxy: Some(proxy),
+        cookies_file: netscape,
+        sections: None,
+    };
+
+    let app2 = app.clone();
+    let prog_result = run_download(&resolver, &url, &params, &cfg, &cancel, move |p| {
+        update_item(&app2, &id, |it| {
+            it.percent = p.percent;
+            if let Some(s) = p.speed {
+                it.speed = Some(s);
+            }
+            if let Some(e) = p.eta {
+                it.eta = Some(e);
+            }
+            if let Some(f) = p.file {
+                it.file = Some(f);
+            }
+        });
+    });
+
+    let mut outcome = match prog_result {
+        Ok(o) => o,
+        Err(e) => {
+            finish_download(&app, &id, &cancel, Err(e), &state.paths.temp_dir(), &params);
+            return;
+        }
+    };
+
+    // 后处理（DL-04）
+    let mut first = outcome.output_paths.first().cloned();
+    if let Some(path) = &first {
+        log_item(&app, &id, "下载完成，开始后处理…");
+        update_item(&app, &id, |it| {
+            it.status = Status::PostProcessing;
+        });
+        let app2 = app.clone();
+        let cfg2 = cfg.clone();
+        let general2 = general.clone();
+        let cancel2 = cancel.clone();
+        let pp = post_process(&resolver, path, &cfg2, &general2, &cancel2, |line| {
+            log_item(&app2, &id, line);
+        });
+        match pp {
+            Ok(final_path) => {
+                first = Some(final_path);
+                outcome.output_paths = vec![final_path];
+            }
+            Err(e) => {
+                finish_download(&app, &id, &cancel, Err(e), &state.paths.temp_dir(), &params);
+                return;
+            }
+        }
+    }
+
+    // 产物解析（MD-06）
+    if let Some(path) = &first {
+        match probe_output(&resolver, path) {
+            Ok(meta) => {
+                update_item(&app, &id, |it| {
+                    it.meta = meta;
+                });
+            }
+            Err(_) => {}
+        }
+    }
+    finish_download(
+        &app,
+        &id,
+        &cancel,
+        Ok(outcome),
+        &state.paths.temp_dir(),
+        &params,
+    );
+}
+
+fn finish_download(
+    app: &AppHandle,
+    id: &str,
+    cancel: &Arc<std::sync::atomic::AtomicBool>,
+    result: Result<download::DownloadOutcome, CoreError>,
+    temp_root: &Path,
+    params: &DownloadParams,
+) {
+    let state = app.state::<AppState>();
+    let final_status = match &result {
+        Ok(o) => {
+            log_item(
+                app,
+                id,
+                format!("下载完成：{} 个文件", o.output_paths.len()),
+            );
+            Status::Done
+        }
+        Err(CoreError::Cancelled) => {
+            cleanup_on_cancel(params, temp_root);
+            log_item(app, id, "已取消，清理残留");
+            Status::Canceled
+        }
+        Err(e) => {
+            log_item(app, id, format!("下载失败：{}", e));
+            Status::Failed
+        }
+    };
+    update_item(app, id, |it| {
+        it.status = final_status;
+        it.percent = if final_status == Status::Done {
+            100.0
+        } else {
+            it.percent
+        };
+        if let Err(e) = &result {
+            it.error = Some(e.to_string());
+        }
+        if final_status == Status::Done {
+            it.speed = None;
+            it.eta = None;
+        }
+    });
+    // 释放并发 slot，启动下一个等待任务
+    let next = {
+        let mut q = state.queue.lock().unwrap();
+        q.finish(id)
+    };
+    if let Some(next_id) = next {
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            let st = app2.state::<AppState>();
+            let item = {
+                let h = st.history.lock().unwrap();
+                h.get(&next_id).cloned()
+            };
+            let Some(item) = item else { return };
+            log_item(&app2, &next_id, "开始下载…");
+            let (fid, aonly) = (item.format_id.clone(), item.audio_only);
+            run_download_task(app2, next_id, fid, aonly);
+        });
+    }
+    persist(app);
+}
+
+fn default_output_dir(state: &AppState, item: &MediaItem) -> PathBuf {
+    if let Some(dir) = &state.config.lock().unwrap().general.default_output_dir {
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+    // 默认桌面（§3.6 通用）
+    std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .map(|p| p.join("Desktop"))
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|p| p.join("Desktop"))
+        })
+        .unwrap_or_else(|| state.paths.root().join("output"))
+}
+
+fn prepare_cookies(state: &AppState, item: &MediaItem) -> Option<PathBuf> {
+    let host = item.host.clone().or_else(|| {
+        item.url
+            .as_deref()
+            .and_then(ytdlp_core::cookies::host_from_url)
+    })?;
+    let store = CookieStore::new(state.paths.cookies_dir());
+    let tmp = state.paths.temp_dir().join(format!("cookies-{}.txt", host));
+    store.export_netscape(&host, &tmp).ok().flatten()
+}
+
+#[tauri::command]
+pub fn cancel_item(app: AppHandle, id: String) -> CmdResult<()> {
+    let state = app.state::<AppState>();
+    // 等待中：直接移除
+    let removed = {
+        let mut q = state.queue.lock().unwrap();
+        q.cancel_waiting(&id)
+    };
+    if removed {
+        update_item(&app, &id, |it| {
+            it.status = Status::Canceled;
+            it.push_log("已取消（队列中移除）".to_string());
+        });
+        persist(&app);
+        return Ok(());
+    }
+    // 运行中：置取消标志，进程树由任务线程终止
+    if let Some(flag) = state.cancel_flag(&id) {
+        flag.store(true, Ordering::Relaxed);
+        update_item(&app, &id, |it| {
+            it.status = Status::Canceled;
+            it.push_log("正在取消…".to_string());
+        });
+        persist(&app);
+        Ok(())
+    } else {
+        Err("该任务未在运行中".into())
+    }
+}
+
+#[tauri::command]
+pub fn remove_item(app: AppHandle, id: String) -> CmdResult<()> {
+    let state = app.state::<AppState>();
+    let mut hist = state.history.lock().unwrap();
+    if hist.remove(&id) {
+        drop(hist);
+        persist(&app);
+        let _ = app.emit("item:removed", id);
+        Ok(())
+    } else {
+        Err("条目不存在".into())
+    }
+}
+
+#[tauri::command]
+pub fn clear_done(app: AppHandle) -> CmdResult<()> {
+    let state = app.state::<AppState>();
+    state.history.lock().unwrap().clear_done();
+    persist(&app);
+    let _ = app.emit("list:changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn retry_item(app: AppHandle, id: String) -> CmdResult<()> {
+    let state = app.state::<AppState>();
+    let ok = {
+        let mut hist = state.history.lock().unwrap();
+        let item = hist.get(&id).cloned().ok_or("条目不存在")?;
+        if !item.status.is_terminal() && item.status != Status::NeedLogin {
+            return Err("仅失败/已取消/需要登录可重试".into());
+        }
+        let ns = transition(item.status, Status::Probing).map_err(err_string)?;
+        hist.upsert(MediaItem {
+            status: ns,
+            error: None,
+            ..item
+        });
+        true
+    };
+    if ok {
+        let app2 = app.clone();
+        std::thread::spawn(move || run_probe(app2, id));
+        persist(&app);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn relogin_item(app: AppHandle, id: String) -> CmdResult<()> {
+    let state = app.state::<AppState>();
+    let host = {
+        let hist = state.history.lock().unwrap();
+        let item = hist.get(&id).ok_or("条目不存在")?;
+        item.host.clone().or_else(|| {
+            item.url
+                .as_deref()
+                .and_then(ytdlp_core::cookies::host_from_url)
+        })
+    };
+    let host = host.ok_or("无法确定登录站点")?;
+    let login_url = login::login_url_for_host(&host).ok_or("该站点不支持内置登录")?;
+    login::open_login(&app, &host, &login_url).map_err(err_string)?;
+    Ok(())
+}
+
+// ---------- 配置 ----------
+
+#[tauri::command]
+pub fn get_config(state: State<'_, AppState>) -> CmdResult<AppConfig> {
+    Ok(state.config.lock().unwrap().clone())
+}
+
+#[tauri::command]
+pub fn save_config(app: AppHandle, config: AppConfig) -> CmdResult<()> {
+    let state = app.state::<AppState>();
+    {
+        let mut cur = state.config.lock().unwrap();
+        *cur = config.clone();
+    }
+    let path = state.paths.config_file();
+    let _ = std::fs::create_dir_all(state.paths.config_dir());
+    config.save(&path).map_err(err_string)?;
+    // 并发上限即时生效
+    state
+        .queue
+        .lock()
+        .unwrap()
+        .set_concurrency(config.general.concurrency);
+    Ok(())
+}
+
+// ---------- Cookie ----------
+
+#[tauri::command]
+pub fn list_cookies(state: State<'_, AppState>) -> CmdResult<Vec<serde_json::Value>> {
+    let store = CookieStore::new(state.paths.cookies_dir());
+    let mut out = Vec::new();
+    for host in store.list_hosts().map_err(err_string)? {
+        let cookies = store.load_host(&host).map_err(err_string)?;
+        out.push(serde_json::json!({
+            "host": host,
+            "count": cookies.len(),
+            "expires_at": cookies.iter().filter_map(|c| c.expires).fold(0.0, f64::max),
+        }));
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn save_cookies(
+    app: AppHandle,
+    host: String,
+    cookies: Vec<ytdlp_core::cookies::CookieEntry>,
+) -> CmdResult<()> {
+    let state = app.state::<AppState>();
+    let store = CookieStore::new(state.paths.cookies_dir());
+    store.save_host(&host, cookies).map_err(err_string)?;
+    let _ = app.emit("cookies:changed", host);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_cookie(app: AppHandle, host: String) -> CmdResult<()> {
+    let state = app.state::<AppState>();
+    let store = CookieStore::new(state.paths.cookies_dir());
+    store.delete_host(&host).map_err(err_string)?;
+    let _ = app.emit("cookies:changed", host);
+    Ok(())
+}
+
+// ---------- 依赖自检 ----------
+
+#[tauri::command]
+pub fn probe_dependencies(state: State<'_, AppState>) -> CmdResult<Vec<ToolStatus>> {
+    let resolver = state.resolver();
+    let mut out = Vec::new();
+    for tool in [
+        ytdlp_core::exec::Tool::YtDlp,
+        ytdlp_core::exec::Tool::Ffmpeg,
+        ytdlp_core::exec::Tool::Ffprobe,
+        ytdlp_core::exec::Tool::Deno,
+    ] {
+        let resolved = resolver.resolve(tool);
+        let (path, version, ok) = match &resolved {
+            Ok(p) => {
+                let v = ytdlp_core::exec::tool_version(&resolver, tool);
+                (Some(p.to_string_lossy().into_owned()), v, true)
+            }
+            Err(_) => (None, None, false),
+        };
+        out.push(ToolStatus {
+            tool: tool.name().to_string(),
+            path,
+            version,
+            ok,
+        });
+    }
+    Ok(out)
+}
+
+// ---------- 其他 ----------
+
+#[tauri::command]
+pub fn open_item_dir(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    let hist = state.history.lock().unwrap();
+    let item = hist.get(&id).ok_or("条目不存在")?;
+    let target = item
+        .file
+        .as_ref()
+        .map(PathBuf::from)
+        .or_else(|| item.path.clone().map(PathBuf::from))
+        .ok_or("该条目没有本地文件")?;
+    let dir = if target.is_dir() {
+        target
+    } else {
+        target.parent().map(Path::to_path_buf).unwrap_or(target)
+    };
+    open_in_explorer(&dir)
+}
+
+#[cfg(windows)]
+fn open_in_explorer(dir: &Path) -> CmdResult<()> {
+    std::process::Command::new("explorer")
+        .arg(dir)
+        .spawn()
+        .map_err(err_string)?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn open_in_explorer(_dir: &Path) -> CmdResult<()> {
+    Err("仅 Windows 支持打开目录".into())
+}
+
+#[tauri::command]
+pub fn clear_temp(state: State<'_, AppState>) -> CmdResult<()> {
+    let dir = state.paths.temp_dir();
+    if dir.is_dir() {
+        for e in std::fs::read_dir(&dir).map_err(err_string)? {
+            let e = e.map_err(err_string)?;
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+    Ok(())
+}
+
+/// 导出当前列表（便于前端实现排序/筛选前取原始数据）。
+pub fn history_export(state: &State<'_, AppState>) -> History {
+    state.history.lock().unwrap().clone()
+}
+
+/// 设置条目旋转角度（UL-12：随条目保存，转码时生效；M2 使用）。
+#[tauri::command]
+pub fn rot_item(app: AppHandle, id: String, degrees: u16) -> CmdResult<()> {
+    let angle = ytdlp_core::model::RotAngle::from_degrees(degrees);
+    update_item(&app, &id, |it| {
+        it.rot_angle = angle;
+    });
+    Ok(())
+}

@@ -163,6 +163,73 @@ pub struct MediaMeta {
     pub has_cover: bool,
     /// URL 解析所得清晰度/格式列表（MD-01）
     pub formats: Vec<String>,
+    /// 结构化下载格式列表（DL-02 格式选择；含 format_id 供下载使用）
+    #[serde(default)]
+    pub download_formats: Vec<DownloadFormat>,
+}
+
+/// 下载格式（DL-02：清晰度/编码/大小/帧率/码率，格式弹窗展示项）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DownloadFormat {
+    pub format_id: String,
+    /// 可读标签（如 `1080P · MP4 · H.264 · 5.2MB · 30fps`）
+    pub label: String,
+    pub height: Option<u32>,
+    pub ext: Option<String>,
+    pub vcodec: Option<String>,
+    pub acodec: Option<String>,
+    pub filesize_bytes: Option<u64>,
+    pub fps: Option<f64>,
+    pub tbr_kbps: Option<u32>,
+    /// 附加说明（如"需登录"、"AV1"）
+    pub note: Option<String>,
+    /// 是否仅音频格式
+    #[serde(default)]
+    pub audio_only: bool,
+}
+
+impl DownloadFormat {
+    /// 生成可读标签（清晰度 · 容器 · 编码 · 大小 · 帧率）。
+    pub fn make_label(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(h) = self.height {
+            parts.push(format!("{}P", h));
+        } else if self.audio_only {
+            parts.push("仅音频".into());
+        } else {
+            parts.push("自适应".into());
+        }
+        if let Some(e) = &self.ext {
+            parts.push(e.to_uppercase());
+        }
+        if let Some(c) = &self.vcodec {
+            let cl = c.to_lowercase();
+            let short = match cl.as_str() {
+                "av01" => "AV1",
+                "avc1" | "h264" | "h.264" => "H.264",
+                "hevc" | "h265" | "h.265" => "H.265",
+                "vp9" => "VP9",
+                other => other,
+            };
+            parts.push(short.to_string());
+        }
+        if let Some(a) = &self.acodec {
+            let al = a.to_lowercase();
+            let short = match al.as_str() {
+                "mp4a" | "aac" => "AAC",
+                "opus" => "Opus",
+                other => other,
+            };
+            parts.push(short.to_string());
+        }
+        if let Some(f) = self.filesize_bytes {
+            parts.push(human_size(f));
+        }
+        if let Some(f) = self.fps {
+            parts.push(format!("{:.0}fps", f));
+        }
+        parts.join(" · ")
+    }
 }
 
 impl MediaMeta {
@@ -238,6 +305,13 @@ pub struct MediaItem {
     pub status: Status,
     pub percent: f32,
     pub error: Option<String>,
+    /// 下载进度附加信息（§7.1 speed/eta/file）
+    #[serde(default)]
+    pub speed: Option<String>,
+    #[serde(default)]
+    pub eta: Option<String>,
+    #[serde(default)]
+    pub file: Option<String>,
     /// 最近日志行（≤300 行，按条目查看，§3.8/§6.2）
     #[serde(default)]
     pub log: VecDeque<String>,
@@ -269,6 +343,9 @@ impl MediaItem {
             status: Status::Probing,
             percent: 0.0,
             error: None,
+            speed: None,
+            eta: None,
+            file: None,
             log: VecDeque::new(),
             meta: MediaMeta::default(),
             rot_angle: RotAngle::ZERO,

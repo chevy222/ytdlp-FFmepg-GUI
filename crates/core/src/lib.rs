@@ -10,9 +10,14 @@
 //! JSON 原子写（临时文件 + rename）；列表即工作台。
 
 pub mod config;
+pub mod cookies;
+pub mod download;
+pub mod exec;
 pub mod history;
 pub mod model;
 pub mod paths;
+pub mod probe;
+pub mod worker;
 
 pub use model::{ItemKind, MediaItem, RotAngle, Status};
 
@@ -29,6 +34,14 @@ pub enum CoreError {
     NotFound(String),
     #[error("配置损坏: {0}")]
     ConfigCorrupt(String),
+    #[error("任务已取消")]
+    Cancelled,
+    #[error("进程执行失败 ({program}): code={code:?} stderr={stderr}")]
+    ProcessFailed {
+        program: String,
+        code: Option<i32>,
+        stderr: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;
