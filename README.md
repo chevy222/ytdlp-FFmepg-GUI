@@ -43,10 +43,15 @@ push `v*` tag 发布 **zip + 单 EXE 直传**到 GitHub Release。
 | P1 增强 | 播放列表展开平铺、时间范围下载（剪辑）、合并音量归一化 |
 | P2 完善 | TC-16 硬件编码器探测 + 硬编失败自动回退 libx265 |
 
-## 需求文档
+## 文档（docs/）
 
-完整需求 v1.0（终版）：统一列表、元数据先行、下载/转码/合并动作、设置分组（依赖/网络/Cookie/下载/转码/通用）、
-目录存储约定（§3.7）、数据模型（§7）等，见 `docs/ytdlp-FFmpeg-GUI-doubao-需求文档.md`（效果图与架构图同目录）。
+| 文档 | 说明 |
+| --- | --- |
+| `ytdlp-FFmpeg-GUI-doubao-需求文档.md` | 需求 v1.0（终版）：统一列表、元数据先行、下载/转码/合并动作、设置分组、目录存储约定、数据模型 |
+| `ytdlp-FFmpeg-GUI-doubao-效果图.html` | UI 原型效果图（浏览器打开） |
+| `ytdlp-FFmpeg-GUI-doubao-架构总览图.html` | 架构总览（浏览器打开） |
+| `ytdlp-FFmpeg-GUI-主要功能流程图.html` | 主要功能流程图：主流程/三能力动作/状态机/异常兜底/目录存储/设置体系（浏览器打开） |
+| `ytdlp-FFmpeg-GUI-开发里程碑.md` | 开发里程碑：M0-M4 + P1/P2 各阶段 commit、内容与验证状态 |
 
 ## License
 
