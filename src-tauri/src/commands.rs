@@ -13,7 +13,8 @@ use ytdlp_core::cookies::CookieStore;
 use ytdlp_core::download::{
     self, cleanup_on_cancel, post_process, probe_output, run_download, DownloadParams,
 };
-use ytdlp_core::model::{MediaItem, Status};
+use ytdlp_core::model::{ItemKind, MediaItem, Status};
+use ytdlp_core::transcode::{self, TranscodeParams};
 use ytdlp_core::probe::{self, ProbeErrorKind};
 use ytdlp_core::worker::SubmitOutcome;
 use ytdlp_core::{transition, CoreError};
@@ -447,24 +448,13 @@ fn finish_download(
             it.eta = None;
         }
     });
-    // 释放并发 slot，启动下一个等待任务
+    // 释放并发 slot，启动下一个等待任务（下载/转码/合并共用）
     let next = {
         let mut q = state.queue.lock().unwrap();
         q.finish(id)
     };
     if let Some(next_id) = next {
-        let app2 = app.clone();
-        std::thread::spawn(move || {
-            let st = app2.state::<AppState>();
-            let item = {
-                let h = st.history.lock().unwrap();
-                h.get(&next_id).cloned()
-            };
-            let Some(item) = item else { return };
-            log_item(&app2, &next_id, "开始下载…");
-            let (fid, aonly) = (item.format_id.clone(), item.audio_only);
-            run_download_task(app2, next_id, fid, aonly);
-        });
+        launch_next(app, next_id);
     }
     persist(app);
 }
@@ -496,6 +486,229 @@ fn prepare_cookies(state: &AppState, item: &MediaItem) -> Option<PathBuf> {
     let store = CookieStore::new(state.paths.cookies_dir());
     let tmp = state.paths.temp_dir().join(format!("cookies-{}.txt", host));
     store.export_netscape(&host, &tmp).ok().flatten()
+}
+
+/// 批量转码（TC-05：按 设置-转码/通用 默认参数执行，不弹确认窗）。
+#[tauri::command]
+pub fn start_transcode(app: AppHandle, ids: Vec<String>) -> CmdResult<()> {
+    let state = app.state::<AppState>();
+    if ids.is_empty() {
+        return Err("未选择条目".into());
+    }
+    let mut to_run = Vec::new();
+    {
+        let mut hist = state.history.lock().unwrap();
+        for id in &ids {
+            let item = hist.get(id).cloned().ok_or("条目不存在")?;
+            let has_file = item.path.as_deref().map(|p| std::path::Path::new(p).is_file()).unwrap_or(false);
+            if !has_file {
+                log_item(&app, id, "转码被跳过：无本地输入文件（先下载或添加本地文件）");
+                continue;
+            }
+            let to = match transition(item.status, Status::Transcoding) {
+                Ok(t) => t,
+                Err(e) => {
+                    log_item(&app, id, format!("转码被跳过：{}", e));
+                    continue;
+                }
+            };
+            hist.upsert(MediaItem {
+                status: to,
+                ..item.clone()
+            });
+            to_run.push(id.clone());
+        }
+    }
+    if to_run.is_empty() {
+        return Err("没有可转码的条目（需要已解析的本地文件）".into());
+    }
+    for id in to_run {
+        let outcome = {
+            let mut q = state.queue.lock().unwrap();
+            q.submit(&id)
+        };
+        if outcome == SubmitOutcome::Queued {
+            log_item(&app, &id, "已排队，等待并发 slot…");
+        } else {
+            log_item(&app, &id, "开始转码…");
+            let app2 = app.clone();
+            std::thread::spawn(move || run_transcode_task(app2, id));
+        }
+    }
+    persist(&app);
+    Ok(())
+}
+
+/// 转码任务线程（提交队列后执行；进度经 `item:update` 回推）。
+fn run_transcode_task(app: AppHandle, id: String) {
+    let state = app.state::<AppState>();
+    let cancel = state.register_cancel(&id);
+    let (_input, params, meta) = {
+        let hist = state.history.lock().unwrap();
+        let item = match hist.get(&id) {
+            Some(i) => i.clone(),
+            None => return,
+        };
+        let path = match &item.path {
+            Some(p) => std::path::PathBuf::from(p),
+            None => return,
+        };
+        let cfg = state.config.lock().unwrap().clone();
+        let out_dir = default_output_dir(&state, &item);
+        let params = TranscodeParams {
+            input: path.clone(),
+            out_dir,
+            title: item.title.clone(),
+            filename_template: cfg.download.filename_template.clone(),
+            container: "mp4".into(),
+            encoder_mode: cfg.transcode.force_encoder_mode.clone(),
+            low_power: cfg.transcode.low_power,
+            max_w: cfg.transcode.max_w,
+            max_h: cfg.transcode.max_h,
+            brcap_kbps: cfg.transcode.brcap_kbps,
+            normalize_audio: cfg.general.normalize_audio,
+            max_gain_db: cfg.general.max_gain_db,
+            rot_angle: item.rot_angle,
+            keep_cover: cfg.transcode.keep_cover,
+            collision_policy: cfg.general.collision_policy.clone(),
+        };
+        (path, params, item.meta.clone())
+    };
+    let app2 = app.clone();
+    let id2 = id.clone();
+    let result = transcode::run_transcode(
+        &state.resolver(),
+        &params,
+        &meta,
+        &cancel,
+        move |pct| {
+            update_item(&app2, &id2, |it| {
+                it.percent = pct;
+            });
+        },
+        |line| log_item(&app, &id, line),
+    );
+    finish_transcode(&app, &id, result);
+}
+
+/// 转码收尾：原条目恢复、产物作为新条目回列表、释放队列 slot。
+fn finish_transcode(
+    app: &AppHandle,
+    id: &str,
+    result: Result<std::path::PathBuf, CoreError>,
+) {
+    let state = app.state::<AppState>();
+    let (orig_status, final_status) = match &result {
+        Ok(out) => {
+            log_item(app, id, format!("转码完成，产物回列表：{}", out.display()));
+            (restore_status(app, id), Status::Done)
+        }
+        Err(CoreError::Cancelled) => {
+            log_item(app, id, "已取消，清理残留");
+            (restore_status(app, id), Status::Canceled)
+        }
+        Err(e) => {
+            log_item(app, id, format!("转码失败：{}", e));
+            (restore_status(app, id), Status::Failed)
+        }
+    };
+    update_item(app, id, |it| {
+        it.status = orig_status;
+        it.percent = if final_status == Status::Done {
+            100.0
+        } else {
+            it.percent
+        };
+        if let Err(e) = &result {
+            it.error = Some(e.to_string());
+        }
+    });
+    // 成功：产物作为新条目回到列表（TC-11）
+    if let Ok(out) = &result {
+        let meta = probe_output(&state.resolver(), out).unwrap_or_default();
+        let title = out
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "转码产物".into());
+        let mut prod = MediaItem::new(ItemKind::TranscodeOut, title);
+        prod.path = Some(out.to_string_lossy().into_owned());
+        prod.status = Status::Done;
+        prod.percent = 100.0;
+        prod.meta = meta;
+        prod.updated_at = now_str();
+        state.history.lock().unwrap().upsert(prod.clone());
+        let _ = app.emit("item:ready", serde_json::json!({ "id": prod.id }));
+        let _ = app.emit("list:changed", ());
+    }
+    // 释放并发 slot，启动下一个等待任务
+    let next = {
+        let mut q = state.queue.lock().unwrap();
+        q.finish(id)
+    };
+    if let Some(next_id) = next {
+        launch_next(app, next_id);
+    }
+    persist(app);
+}
+
+/// 转码结束后原条目恢复状态：本地文件 → 已就绪；下载产物/转码产物 → 已完成（可再转码）。
+fn restore_status(app: &AppHandle, id: &str) -> Status {
+    let state = app.state::<AppState>();
+    let hist = state.history.lock().unwrap();
+    let Some(item) = hist.get(id) else { return Status::Ready };
+    match item.kind {
+        ItemKind::LocalFile | ItemKind::TranscodeOut => Status::Ready,
+        _ => Status::Done,
+    }
+}
+
+/// 队列 slot 释放后启动下一个等待任务（下载/转码按条目状态分流；M3 合并接入）。
+fn launch_next(app: &AppHandle, next_id: String) {
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        let st = app2.state::<AppState>();
+        let item = {
+            let h = st.history.lock().unwrap();
+            h.get(&next_id).cloned()
+        };
+        let Some(item) = item else { return };
+        log_item(&app2, &next_id, "开始执行…");
+        match item.status {
+            Status::Transcoding => run_transcode_task(app2, next_id),
+            _ => {
+                log_item(&app2, &next_id, "开始下载…");
+                let (fid, aonly) = (item.format_id.clone(), item.audio_only);
+                run_download_task(app2, next_id, fid, aonly);
+            }
+        }
+    });
+}
+
+fn now_str() -> String {
+    let s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = (s / 86400) as i64 + 719_468;
+    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let doe = days - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    let sec = s % 86400;
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        y,
+        m,
+        d,
+        sec / 3600,
+        (sec % 3600) / 60,
+        sec % 60
+    )
 }
 
 #[tauri::command]

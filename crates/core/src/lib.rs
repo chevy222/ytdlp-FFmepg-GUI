@@ -17,6 +17,7 @@ pub mod history;
 pub mod model;
 pub mod paths;
 pub mod probe;
+pub mod transcode;
 pub mod worker;
 
 pub use model::{transition, ItemKind, MediaItem, RotAngle, Status};

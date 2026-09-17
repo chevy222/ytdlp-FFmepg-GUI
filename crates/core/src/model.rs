@@ -427,6 +427,7 @@ pub fn transition(from: Status, to: Status) -> Result<Status, crate::CoreError> 
         | (Status::PostProcessing, Status::Done)
         | (Status::PostProcessing, Status::Failed)
         | (Status::PostProcessing, Status::Canceled)
+        | (Status::Done, Status::Transcoding)
         | (Status::Transcoding, Status::Done)
         | (Status::Transcoding, Status::Failed)
         | (Status::Transcoding, Status::Canceled)
@@ -624,9 +625,12 @@ mod tests {
     }
 
     #[test]
-    fn transition_done_to_transcoding_rejected() {
-        let err = transition(Status::Done, Status::Transcoding).unwrap_err();
-        assert!(matches!(err, crate::CoreError::InvalidTransition { .. }));
+    fn transition_done_to_transcoding_allowed() {
+        // TC 语义：下载完成（Done）的产物可直接进入转码
+        assert_eq!(
+            transition(Status::Done, Status::Transcoding).unwrap(),
+            Status::Transcoding
+        );
     }
 
     #[test]

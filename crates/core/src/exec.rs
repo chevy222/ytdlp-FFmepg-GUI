@@ -331,11 +331,17 @@ mod tests {
         let root = tempdir().unwrap();
         let tools = root.path().join("tools");
         std::fs::create_dir_all(&tools).unwrap();
-        std::fs::write(tools.join("yt-dlp"), "x").unwrap();
-        std::fs::write(tools.join("deno"), "x").unwrap();
+        std::fs::write(tools.join(Tool::YtDlp.exe_name()), "x").unwrap();
+        std::fs::write(tools.join(Tool::Deno.exe_name()), "x").unwrap();
         let r = ToolResolver::default().with_tools_dir(&tools);
-        assert_eq!(r.resolve(Tool::YtDlp).unwrap(), tools.join("yt-dlp"));
-        assert_eq!(r.resolve(Tool::Deno).unwrap(), tools.join("deno"));
+        assert_eq!(
+            r.resolve(Tool::YtDlp).unwrap(),
+            tools.join(Tool::YtDlp.exe_name())
+        );
+        assert_eq!(
+            r.resolve(Tool::Deno).unwrap(),
+            tools.join(Tool::Deno.exe_name())
+        );
     }
 
     #[test]

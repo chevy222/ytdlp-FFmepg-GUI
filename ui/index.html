@@ -333,6 +333,7 @@ function ops(it){
   let h='<div class="ops">';
   const cd = (S.cdTimer[it.id] && s==='Ready' && it.kind==='UrlTask') ? '<span class="countdown">'+S.cdTimer[it.id]+'s 后自动下载</span>' : '';
   if (it.kind==='UrlTask' && s==='Ready') h += cd + '<button class="btn sm primary" data-act="dl" data-id="'+id+'">下载</button>';
+  if ((s==='Ready'||s==='Done') && it.path) h += '<button class="btn sm" data-act="tc" data-id="'+id+'">转码</button>';
   if (s==='NeedLogin') h += '<button class="btn sm" data-act="relogin" data-id="'+id+'">去登录</button>';
   if (s==='Downloading'||s==='PostProcessing'||s==='Transcoding'||s==='Merging') h += '<button class="btn sm danger" data-act="cancel" data-id="'+id+'">取消</button>';
   if (s==='Failed'||s==='Canceled'||s==='NeedLogin') h += '<button class="btn sm" data-act="retry" data-id="'+id+'">重试</button>';
@@ -429,6 +430,7 @@ document.getElementById('tbody').addEventListener('click', e=>{
   if(!act)return;
   const a=act.dataset.act, id=act.dataset.id;
   if(a==='dl')startDownload(id);
+  else if(a==='tc')INVOKE('start_transcode',{ids:[id]}).catch(err=>toast(err));
   else if(a==='cancel')INVOKE('cancel_item',{id}).catch(err=>toast(err));
   else if(a==='retry')INVOKE('retry_item',{id}).then(()=>toast('已重新解析')).catch(err=>toast(err));
   else if(a==='relogin')INVOKE('relogin_item',{id}).catch(err=>toast(err));
@@ -471,7 +473,11 @@ document.getElementById('btnDelSel').addEventListener('click', ()=>{
 });
 document.getElementById('btnRotCW').addEventListener('click',()=>batchRot(90));
 document.getElementById('btnRotCCW').addEventListener('click',()=>batchRot(-90));
-document.getElementById('btnTranscode').addEventListener('click',()=>toast('转码能力在 M2 里程碑接入'));
+document.getElementById('btnTranscode').addEventListener('click',()=>{
+  if(!S.selected.size){toast('请先勾选条目');return;}
+  const ids=[...S.selected];
+  INVOKE('start_transcode',{ids}).then(()=>{S.selected.clear();render();}).catch(err=>toast(err));
+});
 document.getElementById('btnMerge').addEventListener('click',()=>toast('合并能力在 M3 里程碑接入'));
 
 function addUrls(){

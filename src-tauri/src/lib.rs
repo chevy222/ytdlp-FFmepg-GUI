@@ -20,6 +20,7 @@ pub fn run() {
             commands::list_items,
             commands::get_item,
             commands::start_download,
+            commands::start_transcode,
             commands::cancel_item,
             commands::remove_item,
             commands::clear_done,
