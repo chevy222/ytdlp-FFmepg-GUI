@@ -7,15 +7,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use ytdlp_core::config::AppConfig;
 use ytdlp_core::cookies::CookieStore;
 use ytdlp_core::download::{
     self, cleanup_on_cancel, post_process, probe_output, run_download, DownloadParams,
 };
-use ytdlp_core::exec::ToolResolver;
-use ytdlp_core::history::History;
-use ytdlp_core::model::{ItemKind, MediaItem, Status};
+use ytdlp_core::model::{MediaItem, Status};
 use ytdlp_core::probe::{self, ProbeErrorKind};
 use ytdlp_core::worker::SubmitOutcome;
 use ytdlp_core::{transition, CoreError};
@@ -49,10 +47,6 @@ fn update_item(app: &AppHandle, id: &str, f: impl FnOnce(&mut MediaItem)) -> Opt
     drop(hist);
     let _ = app.emit("item:update", &item);
     Some(item)
-}
-
-fn emit(app: &AppHandle, item: &MediaItem) {
-    let _ = app.emit("item:update", item);
 }
 
 /// 记录日志行并 emit。
@@ -155,7 +149,7 @@ fn run_probe(app: AppHandle, id: String) {
         let hist = state.history.lock().unwrap();
         hist.get(&id).cloned()
     };
-    let Some(mut item) = item else {
+    let Some(item) = item else {
         return;
     };
     log_item(&app, &id, "开始解析元数据…");
@@ -342,8 +336,9 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
     };
 
     let app2 = app.clone();
+    let id2 = id.clone();
     let prog_result = run_download(&resolver, &url, &params, &cfg, &cancel, move |p| {
-        update_item(&app2, &id, |it| {
+        update_item(&app2, &id2, |it| {
             it.percent = p.percent;
             if let Some(s) = p.speed {
                 it.speed = Some(s);
@@ -381,7 +376,7 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
         });
         match pp {
             Ok(final_path) => {
-                first = Some(final_path);
+                first = Some(final_path.clone());
                 outcome.output_paths = vec![final_path];
             }
             Err(e) => {
@@ -393,13 +388,10 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
 
     // 产物解析（MD-06）
     if let Some(path) = &first {
-        match probe_output(&resolver, path) {
-            Ok(meta) => {
-                update_item(&app, &id, |it| {
-                    it.meta = meta;
-                });
-            }
-            Err(_) => {}
+        if let Ok(meta) = probe_output(&resolver, path) {
+            update_item(&app, &id, |it| {
+                it.meta = meta;
+            });
         }
     }
     finish_download(
@@ -415,7 +407,7 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
 fn finish_download(
     app: &AppHandle,
     id: &str,
-    cancel: &Arc<std::sync::atomic::AtomicBool>,
+    _cancel: &Arc<std::sync::atomic::AtomicBool>,
     result: Result<download::DownloadOutcome, CoreError>,
     temp_root: &Path,
     params: &DownloadParams,
@@ -477,7 +469,7 @@ fn finish_download(
     persist(app);
 }
 
-fn default_output_dir(state: &AppState, item: &MediaItem) -> PathBuf {
+fn default_output_dir(state: &AppState, _item: &MediaItem) -> PathBuf {
     if let Some(dir) = &state.config.lock().unwrap().general.default_output_dir {
         if !dir.is_empty() {
             return PathBuf::from(dir);
@@ -624,7 +616,7 @@ pub fn save_config(app: AppHandle, config: AppConfig) -> CmdResult<()> {
         .queue
         .lock()
         .unwrap()
-        .set_concurrency(config.general.concurrency);
+        .set_concurrency(config.general.concurrency as usize);
     Ok(())
 }
 
@@ -741,11 +733,6 @@ pub fn clear_temp(state: State<'_, AppState>) -> CmdResult<()> {
         }
     }
     Ok(())
-}
-
-/// 导出当前列表（便于前端实现排序/筛选前取原始数据）。
-pub fn history_export(state: &State<'_, AppState>) -> History {
-    state.history.lock().unwrap().clone()
 }
 
 /// 设置条目旋转角度（UL-12：随条目保存，转码时生效；M2 使用）。

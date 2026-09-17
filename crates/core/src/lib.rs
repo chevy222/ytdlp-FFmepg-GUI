@@ -19,7 +19,7 @@ pub mod paths;
 pub mod probe;
 pub mod worker;
 
-pub use model::{ItemKind, MediaItem, RotAngle, Status};
+pub use model::{transition, ItemKind, MediaItem, RotAngle, Status};
 
 /// 核心层统一错误类型。
 #[derive(Debug, thiserror::Error)]

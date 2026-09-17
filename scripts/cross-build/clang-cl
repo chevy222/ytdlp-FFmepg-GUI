@@ -1,0 +1,9 @@
+#!/bin/bash
+# clang-cl wrapper — filter out '--' separator (zig cl mode doesn't support it)
+args=()
+for arg in "$@"; do
+    if [ "$arg" != "--" ]; then
+        args+=("$arg")
+    fi
+done
+exec ${ZIG:-zig} cc --driver-mode=cl "${args[@]}"

@@ -1,0 +1,43 @@
+#!/bin/bash
+# windres wrapper — internally uses zig rc to compile .rc -> COFF object
+
+# Probe mode: embed_resource calls with "-V /?"
+if [ "$1" = "-V" ] || [ "$1" = "--version" ]; then
+  echo "GNU windres (zig rc wrapper) 2.40"
+  exit 0
+fi
+
+input=""
+output=""
+include_dir=""
+prev=""
+
+for arg in "$@"; do
+  if [ "$prev" = "--input" ]; then input="$arg"; prev=""; continue; fi
+  if [ "$prev" = "--output" ]; then output="$arg"; prev=""; continue; fi
+  if [ "$prev" = "--include-dir" ]; then include_dir="$arg"; prev=""; continue; fi
+  case "$arg" in
+    --input) prev="--input" ;;
+    --output) prev="--output" ;;
+    --include-dir) prev="--include-dir" ;;
+    --output-format=*) ;;
+  esac
+done
+
+if [ -z "$input" ] || [ -z "$output" ]; then
+  echo "windres wrapper: missing --input or --output" >&2
+  echo "args: $@" >&2
+  exit 1
+fi
+
+export PATH="$HOME/bin:$PATH"
+
+# Build zig rc args
+rc_args=(/:output-format coff /:target x86_64 /fo "$output")
+if [ -n "$include_dir" ]; then
+  rc_args+=(/i "$include_dir")
+fi
+rc_args+=("$input")
+
+${ZIG:-zig} rc "${rc_args[@]}"
+exit $?

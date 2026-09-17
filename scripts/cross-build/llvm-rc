@@ -1,0 +1,14 @@
+#!/bin/bash
+# llvm-rc wrapper — use zig rc, filter unsupported options
+args=()
+for arg in "$@"; do
+    case "$arg" in
+        /no-preprocess|--no-preprocess)
+            continue
+            ;;
+        *)
+            args+=("$arg")
+            ;;
+    esac
+done
+exec ${ZIG:-zig} rc "${args[@]}"

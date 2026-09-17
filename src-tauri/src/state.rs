@@ -18,8 +18,6 @@ pub struct AppState {
     pub queue: Mutex<TaskQueue>,
     /// 任务取消标志注册表（id -> flag）
     pub cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
-    /// 解析缓存（host|normalized-url -> 缓存时间；M1 内存级，落盘 P2）
-    pub probe_cache: Mutex<HashMap<String, i64>>,
 }
 
 impl AppState {
@@ -28,13 +26,13 @@ impl AppState {
         let _ = paths.ensure_dirs();
         let config = AppConfig::load(&paths.config_file()).unwrap_or_default();
         let history = History::load(&paths.history_file()).unwrap_or_default();
+        let concurrency = config.general.concurrency as usize;
         Self {
             paths,
             history: Mutex::new(history),
             config: Mutex::new(config),
-            queue: Mutex::new(TaskQueue::new(config.general.concurrency)),
+            queue: Mutex::new(TaskQueue::new(concurrency)),
             cancels: Mutex::new(HashMap::new()),
-            probe_cache: Mutex::new(HashMap::new()),
         }
     }
 

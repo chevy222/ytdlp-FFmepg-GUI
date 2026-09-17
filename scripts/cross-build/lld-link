@@ -1,0 +1,16 @@
+#!/bin/bash
+# lld-link wrapper — filter out '-flavor link' (zig lld-link is already link mode)
+args=()
+skip_next=false
+for arg in "$@"; do
+    if [ "$skip_next" = true ]; then
+        skip_next=false
+        continue
+    fi
+    if [ "$arg" = "-flavor" ]; then
+        skip_next=true
+        continue
+    fi
+    args+=("$arg")
+done
+exec ${ZIG:-zig} lld-link "${args[@]}"

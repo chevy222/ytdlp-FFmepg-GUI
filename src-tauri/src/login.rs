@@ -5,10 +5,9 @@
 //! - Windows 上优先经 WebView2 CookieManager（COM）抓取含 HttpOnly 的 Cookie；失败回退 URL 携带的 cookie
 //! - 保存后关闭登录窗并自动重解析 NeedLogin 条目
 
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::commands::save_cookies;
-use crate::state::AppState;
 
 /// 已知支持内置登录的站点 → 登录 URL。
 pub fn login_url_for_host(host: &str) -> Option<String> {
@@ -32,7 +31,8 @@ pub fn open_login(app: &AppHandle, host: &str, url: &str) -> Result<(), String> 
         return Ok(());
     }
     let script = login_inject_script();
-    let win = WebviewWindowBuilder::new(
+    let host2 = host.to_string();
+    WebviewWindowBuilder::new(
         app,
         "ytdlp-login",
         WebviewUrl::External(url.parse().map_err(|e| format!("无效登录 URL：{}", e))?),
@@ -42,16 +42,17 @@ pub fn open_login(app: &AppHandle, host: &str, url: &str) -> Result<(), String> 
     .min_inner_size(720.0, 560.0)
     .center()
     .initialization_script(&script)
+    .on_page_load(move |webview, payload| {
+        let url = payload.url().to_string();
+        if url.contains("ytdlp-login-done") {
+            let app = webview.app_handle().clone();
+            if let Some(win) = app.get_webview_window("ytdlp-login") {
+                handle_login_done(&win, &host2, &url);
+            }
+        }
+    })
     .build()
     .map_err(|e| format!("打开登录窗口失败：{}", e))?;
-
-    let host2 = host.to_string();
-    win.on_page_load(move |event| {
-        let url = event.url().to_string();
-        if url.contains("ytdlp-login-done") {
-            handle_login_done(&win, &host2, &url);
-        }
-    });
     Ok(())
 }
 
@@ -60,7 +61,12 @@ fn handle_login_done(win: &tauri::WebviewWindow, host: &str, url: &str) {
     // 1) Windows：尝试 COM 抓取（含 HttpOnly）
     #[cfg(windows)]
     {
-        let got = win.with_webview(|webview| crate::login_win::fetch_cookies_com(webview, host));
+        let (tx, rx) = std::sync::mpsc::channel::<Option<Vec<ytdlp_core::cookies::CookieEntry>>>();
+        let host_owned = host.to_string();
+        let _ = win.with_webview(move |webview| {
+            let _ = tx.send(crate::login_win::fetch_cookies_com(&webview, &host_owned));
+        });
+        let got = rx.recv().ok().flatten();
         if let Some(cookies) = got {
             if !cookies.is_empty() {
                 let _ = save_cookies(app.clone(), host.to_string(), cookies);
@@ -72,21 +78,19 @@ fn handle_login_done(win: &tauri::WebviewWindow, host: &str, url: &str) {
     // 2) 回退：解析 URL 携带的 document.cookie
     if let Ok(parsed) = url::Url::parse(url) {
         let mut cookies = Vec::new();
-        if let Some(q) = parsed.query_pairs() {
-            for (k, v) in q {
-                if k == "cookies" {
-                    for c in parse_cookie_header(&v) {
-                        cookies.push(ytdlp_core::cookies::CookieEntry {
-                            name: c.0,
-                            value: c.1,
-                            domain: format!(".{}", host.trim_start_matches("www.")),
-                            path: "/".into(),
-                            expires: None,
-                            http_only: false,
-                            secure: true,
-                            same_site: "lax".into(),
-                        });
-                    }
+        for (k, v) in parsed.query_pairs() {
+            if k == "cookies" {
+                for c in parse_cookie_header(v.as_ref()) {
+                    cookies.push(ytdlp_core::cookies::CookieEntry {
+                        name: c.0,
+                        value: c.1,
+                        domain: format!(".{}", host.trim_start_matches("www.")),
+                        path: "/".into(),
+                        expires: None,
+                        http_only: false,
+                        secure: true,
+                        same_site: "lax".into(),
+                    });
                 }
             }
         }
@@ -96,7 +100,6 @@ fn handle_login_done(win: &tauri::WebviewWindow, host: &str, url: &str) {
     }
     finish_login(&app, host);
 }
-
 fn finish_login(app: &AppHandle, _host: &str) {
     // 关闭登录窗
     if let Some(win) = app.get_webview_window("ytdlp-login") {
