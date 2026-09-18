@@ -411,15 +411,20 @@ fn run_transcode_once(
             guard.kill_tree();
             break;
         }
+        if line.trim() == "progress=end" {
+            on_progress(100.0);
+            continue;
+        }
         if let Some(us) = parse_out_time_us(&line) {
             if duration > 0.0 {
-                let pct = ((us as f64 / 1e6) / duration * 100.0).clamp(0.0, 99.0) as f32;
+                let pct = ((us as f64 / 1e6) / duration * 100.0).clamp(0.0, 100.0) as f32;
                 on_progress(pct);
             }
         }
     }
 
     let status = guard.wait()?;
+    on_progress(100.0);
     if cancel.load(Ordering::Relaxed) {
         let _ = std::fs::remove_file(&out);
         return Err(CoreError::Cancelled);
