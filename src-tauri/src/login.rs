@@ -32,7 +32,14 @@ pub fn open_login(app: &AppHandle, host: &str, url: &str) -> Result<(), String> 
     }
     let script = login_inject_script();
     let host2 = host.to_string();
-    WebviewWindowBuilder::new(
+    let url_owned = url.to_string();
+    // 按站点分流给登录窗配置代理（与 yt-dlp 解析一致的白名单：勾选的站点才走代理）
+    let proxy_arg = {
+        let state = app.state::<crate::state::AppState>();
+        let cfg = state.config.lock().unwrap().clone();
+        cfg.network.resolve_proxy(&url_owned).map(|p| format!("--proxy-server={}", p))
+    };
+    let mut builder = WebviewWindowBuilder::new(
         app,
         "ytdlp-login",
         WebviewUrl::External(url.parse().map_err(|e| format!("无效登录 URL：{}", e))?),
@@ -50,9 +57,13 @@ pub fn open_login(app: &AppHandle, host: &str, url: &str) -> Result<(), String> 
                 handle_login_done(&win, &host2, &url);
             }
         }
-    })
-    .build()
-    .map_err(|e| format!("打开登录窗口失败：{}", e))?;
+    });
+    if let Some(pa) = proxy_arg {
+        builder = builder.additional_browser_args(&pa);
+    }
+    builder
+        .build()
+        .map_err(|e| format!("打开登录窗口失败：{}", e))?;
     Ok(())
 }
 
