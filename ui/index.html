@@ -108,7 +108,9 @@
   .modal.show{display:flex}
   .modal .box{width:920px;max-width:94vw;max-height:88vh;background:#fff;border-radius:14px;box-shadow:0 20px 60px rgba(15,23,42,.3);display:flex;flex-direction:column;overflow:hidden}
   .modal .hd{display:flex;align-items:center;gap:10px;padding:13px 18px;border-bottom:1px solid var(--line);font-weight:700;font-size:15px}
-  .modal .hd .sp{flex:1}
+  .modal .hd > span:first-child{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .modal .hd .sp{flex:0}
+  .modal .hd .sp{flex:0}
   .modal .bd{display:flex;min-height:0;flex:1}
   .modal .nav{width:150px;flex:none;border-right:1px solid var(--line);padding:10px 8px;display:flex;flex-direction:column;gap:2px;overflow:auto}
   .modal .nav button{border:none;background:none;text-align:left;padding:9px 12px;border-radius:8px;font-size:13px;color:var(--sub);cursor:pointer}

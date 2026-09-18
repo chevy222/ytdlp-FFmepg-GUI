@@ -13,7 +13,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::exec::{ChildGuard, Tool, ToolResolver};
+use crate::exec::{decode_text, ChildGuard, Tool, ToolResolver};
 use crate::model::{MediaMeta, RotAngle};
 use crate::{CoreError, Result};
 
@@ -207,7 +207,7 @@ pub fn qsv_available(resolver: &ToolResolver) -> Result<bool> {
 /// 探测可用硬件编码器（QSV/NVENC/AMF，TC-16）。
 pub fn detect_hw_encoders(resolver: &ToolResolver) -> Result<HwEncoders> {
     let out = crate::exec::run_tool_capture(resolver, Tool::Ffmpeg, &["-encoders"])?;
-    let text = String::from_utf8_lossy(&out.stdout);
+    let text = decode_text(&out.stdout);
     Ok(parse_encoders_output(&text))
 }
 

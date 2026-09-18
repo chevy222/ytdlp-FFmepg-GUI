@@ -248,7 +248,7 @@ pub fn run_capture(mut cmd: Command) -> crate::Result<Output> {
         return Err(CoreError::ProcessFailed {
             program: cmd.get_program().to_string_lossy().into_owned(),
             code: out.status.code(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            stderr: decode_text(&out.stderr),
         });
     }
     Ok(out)
@@ -272,9 +272,26 @@ pub fn tool_version(resolver: &ToolResolver, tool: Tool) -> Option<String> {
         _ => "--version",
     };
     let out = run_tool_capture(resolver, tool, &[arg]).ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
+    let text = decode_text(&out.stdout);
     let first = text.lines().next()?.trim().to_string();
     Some(first)
+}
+
+/// 子进程文本输出解码：优先 UTF-8；非法序列时 Windows 走 GBK（yt-dlp
+/// 在中文 Windows 下常输出 cp936），其余平台做 lossy 替换。
+pub fn decode_text(bytes: &[u8]) -> String {
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_string();
+    }
+    #[cfg(windows)]
+    {
+        let (cow, _, _) = encoding_rs::GBK.decode(bytes);
+        cow.into_owned()
+    }
+    #[cfg(not(windows))]
+    {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
 }
 
 /// 校验指定路径可执行（依赖路径输入框失焦校验）。

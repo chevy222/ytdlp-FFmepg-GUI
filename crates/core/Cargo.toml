@@ -15,6 +15,7 @@ regex = { workspace = true }
 ureq = { version = "2", default-features = false, features = ["native-tls"] }
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
+encoding_rs = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

@@ -12,7 +12,7 @@ use std::process::Stdio;
 use serde_json::Value;
 
 use crate::config::NetworkConfig;
-use crate::exec::{ChildGuard, Tool, ToolResolver};
+use crate::exec::{decode_text, ChildGuard, Tool, ToolResolver};
 use crate::model::{AudioVolume, DownloadFormat, MediaMeta};
 use crate::Result;
 
@@ -101,12 +101,12 @@ pub fn list_playlist_entries(
         message: format!("yt-dlp 退出异常：{}", e),
     })?;
     if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
+        let err = decode_text(&output.stderr);
         let mut f = classify_ytdlp_error(&err);
         f.message = format!("获取播放列表失败：{}", err.trim());
         return Err(f);
     }
-    let text = String::from_utf8_lossy(&output.stdout);
+    let text = decode_text(&output.stdout);
     let v: Value = match serde_json::from_str(&text) {
         Ok(v) => v,
         Err(_) => {
@@ -189,10 +189,10 @@ pub fn probe_url(
         message: format!("yt-dlp 退出异常：{}", e),
     })?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = decode_text(&output.stderr);
         return Err(classify_ytdlp_error(stderr.trim()));
     }
-    let text = String::from_utf8_lossy(&output.stdout);
+    let text = decode_text(&output.stdout);
     parse_ytdlp_json(&text).map_err(|e| ProbeFailure {
         kind: ProbeErrorKind::Failed,
         message: format!("解析 yt-dlp 输出失败：{}", e),
@@ -239,11 +239,11 @@ pub fn probe_local(
             kind: ProbeErrorKind::NotVideo,
             message: format!(
                 "ffprobe 探测失败：{}",
-                String::from_utf8_lossy(&out.stderr).trim()
+                decode_text(&out.stderr).trim()
             ),
         });
     }
-    let text = String::from_utf8_lossy(&out.stdout);
+    let text = decode_text(&out.stdout);
     let mut meta = parse_ffprobe_json(&text);
     meta.size_bytes = std::fs::metadata(path).ok().map(|m| m.len());
 
@@ -265,7 +265,7 @@ pub fn probe_volume(resolver: &ToolResolver, path: &Path) -> Result<AudioVolume>
     cmd.stdout(Stdio::null()).stderr(Stdio::piped());
     let guard = ChildGuard::spawn(&mut cmd)?;
     let out = guard.wait_with_output()?;
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stderr = decode_text(&out.stderr);
     Ok(parse_volumedetect(&stderr))
 }
 
