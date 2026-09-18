@@ -875,7 +875,14 @@ function bindSetEvents(){
     b.classList.add('danger');
     b.textContent='取消';
     INVOKE('download_tool',{tool,force})
-      .then(p=>{toast((force?'更新':'下载')+'完成：'+p);renderSetPage();refreshDeps();})
+      .then(p=>{
+        // 下载完成后把 tools/ 下的路径写回配置，输入框自动显示
+        S.config.dependencies=S.config.dependencies||{};
+        S.config.dependencies[tool]=p;
+        INVOKE('save_config',{config:S.config}).catch(()=>{});
+        toast((force?'更新':'下载')+'完成：'+p);
+        renderSetPage();refreshDeps();
+      })
       .catch(err=>{toast(err);renderSetPage();refreshDeps();});
   }));
   page.querySelectorAll('[data-site]').forEach(b=>b.addEventListener('change',()=>{
