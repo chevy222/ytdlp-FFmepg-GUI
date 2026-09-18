@@ -387,6 +387,14 @@ pub fn parse_ffprobe_json(text: &str) -> MediaMeta {
     for s in &streams {
         match s["codec_type"].as_str() {
             Some("video") => {
+                let is_cover = s["disposition"]["attached_pic"].as_u64() == Some(1)
+                    || s["disposition"]["attached_pic"].as_str() == Some("1");
+                if is_cover {
+                    // 封面流（attached pic）只标记 has_cover，不参与主视频元数据，
+                    // 否则 mjpeg 封面会覆盖主视频的高度/编码器/码率/帧率
+                    meta.has_cover = true;
+                    continue;
+                }
                 meta.height = s["height"].as_u64().map(|h| h as u32);
                 meta.vcodec = s["codec_name"].as_str().map(str::to_string);
                 meta.fps = s["avg_frame_rate"].as_str().and_then(|r| {
@@ -404,11 +412,6 @@ pub fn parse_ffprobe_json(text: &str) -> MediaMeta {
                     .and_then(|b| b.parse::<f64>().ok())
                     .map(|b| (b / 1000.0) as u32);
                 meta.extradata = s["extradata"].as_str().map(str::to_string);
-                if s["disposition"]["attached_pic"].as_u64() == Some(1)
-                    || s["disposition"]["attached_pic"].as_str() == Some("1")
-                {
-                    meta.has_cover = true;
-                }
                 // 旋转标记（转码/后处理时清零，TC-09）
                 if let Some(tags) = s["tags"].as_object() {
                     if let Some(r) = tags.get("rotate").and_then(|x| x.as_str()) {
