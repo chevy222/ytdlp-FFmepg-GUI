@@ -258,7 +258,7 @@ fn run_probe(app: AppHandle, id: String) {
                 let thumb_url = p.thumbnail_url.clone();
                 let local_path = item.path.clone();
                 let resolver2 = resolver.clone();
-                let _ = tauri::async_runtime::spawn(async move {
+                tauri::async_runtime::spawn(async move {
                     let dest = ytdlp_core::thumbs::thumb_path(&cache_dir, &id2);
                     let r = if let Some(u) = thumb_url {
                         if u.is_empty() {
@@ -516,7 +516,7 @@ fn finish_download(
             let id2 = id.to_string();
             let cache_dir = state.paths.cache_dir();
             let resolver2 = state.resolver();
-            let _ = tauri::async_runtime::spawn(async move {
+            tauri::async_runtime::spawn(async move {
                 let dest = ytdlp_core::thumbs::thumb_path(&cache_dir, &id2);
                 if ytdlp_core::thumbs::extract_thumb(&resolver2, std::path::Path::new(&out_path), &dest)
                     .is_ok()
