@@ -515,7 +515,7 @@ function progressCell(it){
     let sp=''; if(it.speed)sp='<span class="spd"> '+esc(it.speed)+(it.eta?' · ETA '+esc(it.eta):'')+'</span>';
     return '<div class="prog">'+p.toFixed(1)+'%'+sp+'<div class="bar"><i style="width:'+p+'%"></i></div></div>';
   }
-  if (s==='Probing') return '<div class="prog"><span class="spd">解析中…</span><div class="bar"><i style="width:40%"></i></div></div>';
+  if (s==='Probing') return '<div class="prog"><span class="spd">解析中…</span></div>';
   if (it.error) return '<div class="err" data-act="err" data-id="'+esc(it.id)+'" title="'+esc(it.error)+'">'+esc(it.error)+'</div>';
   return '<div class="prog">—</div>';
 }
@@ -589,10 +589,14 @@ function pickLocalFiles(){
 function thumbSrc(p){
   try{ return window.__TAURI__.core.convertFileSrc(p); }catch(_){ return ''; }
 }
+// item:update 高频到达（yt-dlp 每条进度行都发一次），整表重渲染必须合并：
+// 数据即时入 S.items，渲染按 ~200ms 合帧——否则高速下载时每秒几十次全量
+// innerHTML 重建会把 UI 线程打满，看起来就像进度卡在 0% 不动
+let __renderQueued=false;
 function upsertItem(it){
   const i=S.items.findIndex(x=>x.id===it.id);
   if(i>=0)S.items[i]=it;else S.items.unshift(it);
-  render();
+  if(!__renderQueued){__renderQueued=true;setTimeout(()=>{__renderQueued=false;render();},200);}
 }
 
 // ===== 列表交互 =====
