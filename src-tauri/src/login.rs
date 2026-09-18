@@ -61,18 +61,9 @@ pub fn open_login(app: &AppHandle, host: &str, url: &str) -> Result<(), String> 
     if let Some(pa) = proxy_arg {
         builder = builder.additional_browser_args(&pa);
     }
-    let win = builder
+    builder
         .build()
         .map_err(|e| format!("打开登录窗口失败：{}", e))?;
-    // 兜底：Esc 关闭登录窗（页面空白/挂起时也能关）
-    let w = win.clone();
-    win.on_window_event(move |e| {
-        if let tauri::window::WindowEvent::KeyboardInput { event: Some(ke), .. } = e {
-            if ke.key == tauri::utils::keyboard::Key::Escape {
-                let _ = w.close();
-            }
-        }
-    });
     Ok(())
 }
 
