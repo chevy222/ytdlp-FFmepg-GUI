@@ -76,7 +76,7 @@
 | TC-05 | 分辨率封顶：`scale='trunc(iw*s/2)*2':'trunc(ih*s/2)*2'`，其中 `s=min(1, MAXH/min(iw,ih), MAXW/max(iw,ih))`——上限按**短边/长边**（旋转不变量）判定：transpose 后 `iw`/`ih` 互换，直接写 `min(ih,MAXH)` 会把原视频长边当短边砍（1080P 转 90° 变 606×1080 的历史 bug）；宽高各自取偶，不放大 | `transcode.rs::build_vf` |
 | TC-06 | 码率封顶：`brcap_kbps` 有值时加 `-maxrate <n>k -bufsize <2n>k` | `transcode.rs::build_args` |
 | TC-07 | 音频增益：开启归一化且 `max_volume ∈ (-100,-0.5)dB` 时按 `min(-max_volume, max_gain_db)` 生成 `volume=XdB` 并重编码 AAC；否则音频 `copy`；作用于全部音轨（`-map 0:a?`） | `transcode.rs::build_args` |
-| TC-08 | 封面：`keep_cover` 开时按探测到的**封面流绝对索引**映射并 `-c:v:1 copy`；源为 MKV 附件型封面（探测不到 attached_pic）时回退 `-map 0:t?` + `-c:t copy` | `transcode.rs::build_args` |
+| TC-08 | 封面：`keep_cover` 开时按探测到的**封面流绝对索引**映射——不旋转 `-c:v:1 copy` 保质量；**旋转时封面同过 transpose 滤镜链**并重编码 mjpeg（`-q:v:1 2` + `-disposition:v:1 attached_pic`，copy 的封面不会跟随旋转）；源为 MKV 附件型封面（探测不到 attached_pic）时回退 `-map 0:t?` + `-c:t copy`（附件不参与旋转） | `transcode.rs::build_args` |
 | TC-09 | 输出显式映射主视频/音频/封面，不复制源流级旋转标签；MP4 + libx265 时加 `-tag:v:0 hvc1`（Apple 兼容） | `transcode.rs::build_args` |
 | TC-10 | 容器 MP4 加 `-movflags +faststart`；MKV 不传该参数；容器由 `TranscodeParams.container` 决定（前端目前固定 mp4） | `transcode.rs::build_args` |
 | TC-11 | 输出到默认输出目录；命名沿用 DL-10 模板（本地条目"标题+ID"用标题哈希作短指纹）；碰撞策略 `auto_inc`（`name (1).ext` 递增，上限 999）或 `skip`（已存在即报错跳过）；成功产物作为新条目（`TranscodeOut`）回到列表 | `transcode.rs::output_path` / `apply_filename_template`、`commands.rs::finish_transcode` |

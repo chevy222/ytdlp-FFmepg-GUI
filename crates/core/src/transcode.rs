@@ -305,19 +305,32 @@ pub fn build_args(resolver: &ToolResolver, params: &TranscodeParams, meta: &Medi
         "-i".into(),
         params.input.to_string_lossy().into_owned(),
     ];
+    let rotated = params.rot_angle.degrees() != 0;
     match (&vf, cover_idx) {
         (Some(filter), Some(ci)) => {
             let src = main_idx
                 .map(|i| format!("0:{i}"))
                 .unwrap_or_else(|| "0:v:0".to_string());
             args.push("-filter_complex".into());
-            args.push(format!("[{src}]{filter}[v]"));
-            args.push("-map".into());
-            args.push("[v]".into());
-            args.push("-map".into());
-            args.push("0:a?".into());
-            args.push("-map".into());
-            args.push(format!("0:{ci}?"));
+            if rotated {
+                // 封面流 copy 不会跟随 transpose —— 旋转时封面也过同一滤镜链，
+                // 重编码 mjpeg 保持 attached_pic 语义（见下方 -c:v:1）
+                args.push(format!("[{src}]{filter}[v];[0:{ci}]{filter}[cv]"));
+                args.push("-map".into());
+                args.push("[v]".into());
+                args.push("-map".into());
+                args.push("0:a?".into());
+                args.push("-map".into());
+                args.push("[cv]".into());
+            } else {
+                args.push(format!("[{src}]{filter}[v]"));
+                args.push("-map".into());
+                args.push("[v]".into());
+                args.push("-map".into());
+                args.push("0:a?".into());
+                args.push("-map".into());
+                args.push(format!("0:{ci}?"));
+            }
         }
         _ => {
             if let Some(filter) = &vf {
@@ -342,13 +355,24 @@ pub fn build_args(resolver: &ToolResolver, params: &TranscodeParams, meta: &Medi
         args.push("-map".into());
         args.push("0:t?".into());
     }
-    // 视频一律写 `-c:v:0`：封面流作为第二条视频流单独 copy
+    // 视频一律写 `-c:v:0`：封面流作为第二条视频流单独处理——
+    // 不旋转时 copy 保质量；旋转时封面已过滤镜链，重编码 mjpeg 并显式
+    // 标回 attached_pic（转码后 disposition 不会自动延续）
     args.push("-c:v:0".into());
     args.push(encoder);
     args.extend(enc_args);
     if cover_idx.is_some() {
-        args.push("-c:v:1".into());
-        args.push("copy".into());
+        if rotated {
+            args.push("-c:v:1".into());
+            args.push("mjpeg".into());
+            args.push("-q:v:1".into());
+            args.push("2".into());
+            args.push("-disposition:v:1".into());
+            args.push("attached_pic".into());
+        } else {
+            args.push("-c:v:1".into());
+            args.push("copy".into());
+        }
     }
     args.push("-c:a".into());
     args.push(if gain.is_some() { "aac" } else { "copy" }.into());
@@ -670,15 +694,30 @@ mod tests {
         params.rot_angle = RotAngle::from_degrees(90);
         let args = build_args(&ToolResolver::default(), &params, &meta).unwrap();
         let joined = args.join(" ");
+        // 旋转时封面也过 transpose 链并重编码 mjpeg（copy 的封面不跟随旋转）
         assert!(
-            joined.contains("-filter_complex [0:1]transpose=1[v]"),
+            joined.contains("-filter_complex [0:1]transpose=1[v];[0:0]transpose=1[cv]"),
             "{}",
             joined
         );
         assert!(joined.contains("-map [v]"), "{}", joined);
+        assert!(joined.contains("-map [cv]"), "{}", joined);
+        assert!(!joined.contains("-map 0:0?"), "{}", joined);
+        assert!(joined.contains("-c:v:1 mjpeg"), "{}", joined);
+        assert!(joined.contains("-disposition:v:1 attached_pic"), "{}", joined);
+        assert!(!joined.contains("-vf "), "{}", joined);
+
+        // 不旋转：封面照旧 copy，保持原质量
+        let mut params = mk();
+        params.max_w = 0;
+        params.max_h = 0;
+        params.rot_angle = RotAngle::ZERO;
+        let args = build_args(&ToolResolver::default(), &params, &meta).unwrap();
+        let joined = args.join(" ");
+        // 无滤镜无上限 → 走 -vf 分支之外的单链；封面映射 0:0? 且 copy
         assert!(joined.contains("-map 0:0?"), "{}", joined);
         assert!(joined.contains("-c:v:1 copy"), "{}", joined);
-        assert!(!joined.contains("-vf "), "{}", joined);
+        assert!(!joined.contains("-disposition:v:1"), "{}", joined);
     }
 
     #[test]
