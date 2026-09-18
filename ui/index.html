@@ -214,7 +214,7 @@
       <div class="hint">统一列表即工作台：下载 / 转码 / 合并都在这里</div>
       <div class="acts">
         <button class="btn primary" onclick="document.getElementById('urlInput').focus()">粘贴链接下载</button>
-        <button class="btn" onclick="document.getElementById('fileInput').click()">添加本地文件</button>
+        <button class="btn" onclick="pickLocalFiles()">添加本地文件</button>
       </div>
     </div>
     <table id="mainTable" style="display:none">
@@ -485,6 +485,14 @@ function renderQueue(){
   const c=S.config&&S.config.general?S.config.general.concurrency:3;
   document.getElementById('queueInfo').textContent='队列 '+running+'/'+c;
 }
+function pickLocalFiles(){
+  window.__TAURI__.dialog.open({ multiple:true, directory:false,
+    filters:[{name:'视频/音频',extensions:['mp4','mkv','mov','avi','flv','webm','wmv','ts','m4v','mp3','flac','wav','m4a','aac','ogg']}]
+  }).then(sel=>{
+    const files=Array.isArray(sel)?sel:(sel?[sel]:[]);
+    if(files.length)INVOKE('add_local',{paths:files,recursive:false}).catch(err=>toast(err));
+  }).catch(err=>toast(err));
+}
 function thumbSrc(p){
   try{ return window.__TAURI__.core.convertFileSrc(p); }catch(_){ return ''; }
 }
@@ -523,17 +531,19 @@ document.getElementById('selAll').addEventListener('change', e=>{
 });
 document.getElementById('btnAdd').addEventListener('click', addUrls);
 document.getElementById('urlInput').addEventListener('keydown', e=>{ if(e.key==='Enter')addUrls(); });
-document.getElementById('btnAddFile').addEventListener('click', ()=>document.getElementById('fileInput').click());
-document.getElementById('btnAddDir').addEventListener('click', ()=>document.getElementById('dirInput').click());
-document.getElementById('fileInput').addEventListener('change', e=>{
-  const files=[...e.target.files].map(f=>f.path);
-  if(files.length)INVOKE('add_local',{paths:files,recursive:false}).catch(err=>toast(err));
-  e.target.value='';
+document.getElementById('btnAddFile').addEventListener('click', ()=>{
+  window.__TAURI__.dialog.open({ multiple:true, directory:false,
+    filters:[{name:'视频/音频',extensions:['mp4','mkv','mov','avi','flv','webm','wmv','ts','m4v','mp3','flac','wav','m4a','aac','ogg']}]
+  }).then(sel=>{
+    const files=Array.isArray(sel)?sel:(sel?[sel]:[]);
+    if(files.length)INVOKE('add_local',{paths:files,recursive:false}).catch(err=>toast(err));
+  }).catch(err=>toast(err));
 });
-document.getElementById('dirInput').addEventListener('change', e=>{
-  const dirs=[...e.target.files].map(f=>f.path);
-  if(dirs.length)INVOKE('add_local',{paths:[dirs[0]],recursive:false}).catch(err=>toast(err));
-  e.target.value='';
+document.getElementById('btnAddDir').addEventListener('click', ()=>{
+  window.__TAURI__.dialog.open({ directory:true, multiple:false })
+    .then(sel=>{
+      if(sel)INVOKE('add_local',{paths:[sel],recursive:true}).catch(err=>toast(err));
+    }).catch(err=>toast(err));
 });
 document.getElementById('btnSettings').addEventListener('click', openSettings);
 document.getElementById('filterSel').addEventListener('change', e=>{ S.filter=e.target.value; render(); });
