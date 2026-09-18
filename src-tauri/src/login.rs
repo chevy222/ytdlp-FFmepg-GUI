@@ -18,6 +18,8 @@ pub fn login_url_for_host(host: &str) -> Option<String> {
         Some("https://www.bilibili.com/".into())
     } else if h.contains("x.com") || h.contains("twitter") {
         Some("https://x.com/".into())
+    } else if h.contains("douyin") {
+        Some("https://www.douyin.com/".into())
     } else {
         None
     }
@@ -191,6 +193,9 @@ mod tests {
             .unwrap()
             .contains("bilibili"));
         assert!(login_url_for_host("x.com").unwrap().contains("x.com"));
+        assert!(login_url_for_host("www.douyin.com")
+            .unwrap()
+            .contains("douyin"));
         assert!(login_url_for_host("example.com").is_none());
     }
 
