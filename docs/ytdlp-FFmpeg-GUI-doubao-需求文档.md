@@ -30,6 +30,7 @@
 | UL-09 | CLI 入口 + 单实例参数转发（见 §10） | `cli.rs`、`src-tauri/src/lib.rs` |
 | UL-10 | 启动恢复：非终态且非"已就绪"/"需要登录"的条目一律标记失败（"应用重启，任务中断"），可重试；"需要登录"跨重启保持原状（未登录事实不因重启改变） | `src-tauri/src/lib.rs::setup` |
 | UL-11 | 封面缩略图：URL 取远程缩略图（系统 `curl` 下载），本地文件/下载产物用 ffmpeg 抽帧（`-ss 0.5`，宽 ≤360），统一落在 `config/cache/thumbs/<条目id>.jpg` | `thumbs.rs` |
+| UL-12 | **工具栏不放品牌 logo/应用名称区块**（左上角不显示 logo 图标 +"影栈 | 本地视频工作台"之类）——工具栏直接从 URL 输入框开始，保持紧凑。应用图标只出现在窗口标题栏/任务栏/欢迎页中央，不在工具栏重复占位 | `ui/index.html::toolbar` |
 | UL-12 | 手动旋转：缩略图上的顺/逆时针箭头 → 角度 0/90/180/270 随条目保存（`rot_angle`，设置即落盘，重启不丢），转码时生效；角度 ≠ 0 时缩略图右上角显示角标 | `commands.rs::rot_item`、`model.rs::RotAngle` |
 | UL-13 | 每条目独立日志（最近 300 行），弹窗可查看/复制/仅清空视图 | `model.rs::push_log`、`ui/index.html::openLog` |
 
