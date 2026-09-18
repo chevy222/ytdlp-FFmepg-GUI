@@ -33,7 +33,6 @@
   .btn.sm.icon{width:27px;padding:0}
   .btn.sm + .btn.sm{margin-left:4px}
   .btn:disabled{opacity:.5;cursor:not-allowed}
-  .fsel{display:inline-flex;align-items:center;gap:6px;border:1px solid #cbd5e1;background:#fff;border-radius:8px;padding:7px 10px;font-size:13px;color:#334155;outline:none;cursor:pointer;max-width:170px}
   .fsel:hover{border-color:var(--teal-2)}
   .fsel .cnt{color:var(--teal);font-weight:600}
   /* ===== 批量操作栏 ===== */
@@ -186,7 +185,9 @@
     <button id="btnAdd" class="btn primary">添加</button>
     <button id="btnAddFile" class="btn">添加本地文件</button>
     <button id="btnAddDir" class="btn">添加目录</button>
-    <select id="filterSel" class="fsel" title="按状态筛选"></select>
+    <button id="btnClearList" class="btn ghost" title="清空列表">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+    </button>
     <button id="btnSettings" class="btn ghost" title="设置">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     </button>
@@ -333,7 +334,7 @@
 <div class="toast" id="toast"></div>
 <script>
 // ===== 状态 =====
-const S = { items: [], filter: 'all', selected: new Set(), config: null, cdTimer: {}, cdSecs: {} };
+const S = { items: [], selected: new Set(), config: null, cdTimer: {}, cdSecs: {} };
 const INVOKE = (cmd, args) => window.__TAURI__.core.invoke(cmd, args || {});
 const LISTEN = window.__TAURI__.event.listen;
 
@@ -431,7 +432,7 @@ function rotSvg(cw){
 function rowHtml(it){
   const id=esc(it.id);
   const ra=it.rot_angle; const ang=(typeof ra==='number'?ra:((ra&&ra.degrees)||0));
-  return '<tr data-id="'+id+'"'+(passesFilter(it)?'':' class="hidden"')+'>'+
+  return '<tr data-id="'+id+'">'+
     '<td><input type="checkbox" data-act="sel" data-id="'+id+'"'+(S.selected.has(it.id)?' checked':'')+'></td>'+
     '<td><div class="nrow">'+
       '<div class="cv"><div class="thumb" data-id="'+id+'" style="transform:rotate('+ang+'deg)">'+(it.thumb?('<img src="'+thumbSrc(it.thumb)+'" alt="">'):'<span class="ph">影</span>')+'</div>'+
@@ -449,12 +450,6 @@ function rowHtml(it){
   '</tr>';
 }
 
-function passesFilter(it){
-  if(S.filter==='all')return true;
-  if(S.filter==='working')return ['Downloading','PostProcessing','Transcoding','Merging'].includes(it.status);
-  return it.status===S.filter;
-}
-
 function render(){
   const tb=document.getElementById('tbody');
   const list=S.items.slice().sort((a,b)=>(a.updated_at||'')<(b.updated_at||'')?1:-1);
@@ -464,19 +459,12 @@ function render(){
   else{empty.classList.remove('show');table.style.display='';}
   tb.innerHTML=list.map(rowHtml).join('');
   document.getElementById('selAll').checked = list.length>0 && list.every(i=>S.selected.has(i.id));
-  renderBatch(); renderFilter(); renderQueue();
+  renderBatch(); renderQueue();
 }
 function renderBatch(){
   const n=S.selected.size;
   document.getElementById('batchbar').classList.toggle('show',n>0);
   document.getElementById('selCount').textContent=n;
-}
-function renderFilter(){
-  const sel=document.getElementById('filterSel');
-  const groups=[['all','全部'],['Probing','解析中'],['Ready','已就绪'],['working','处理中'],['Done','已完成'],['Failed','失败'],['Canceled','已取消'],['NeedLogin','需要登录']];
-  const cnt=g=>S.items.filter(i=>g==='all'?true:g==='working'?['Downloading','PostProcessing','Transcoding','Merging'].includes(i.status):i.status===g).length;
-  sel.innerHTML=groups.map(([k,l])=>'<option value="'+k+'">'+l+' ('+cnt(k)+')</option>').join('');
-  sel.value=S.filter;
 }
 function renderQueue(){
   const running=S.items.filter(i=>['Downloading','PostProcessing','Transcoding','Merging'].includes(i.status)).length;
@@ -522,9 +510,8 @@ document.getElementById('tbody').addEventListener('change', e=>{
   if(c){ if(c.checked)S.selected.add(c.dataset.id);else S.selected.delete(c.dataset.id); renderBatch(); }
 });
 document.getElementById('selAll').addEventListener('change', e=>{
-  const vis=S.items.filter(i=>passesFilter(i));
-  if(e.target.checked)vis.forEach(i=>S.selected.add(i.id));
-  else vis.forEach(i=>S.selected.delete(i.id));
+  if(e.target.checked)S.items.forEach(i=>S.selected.add(i.id));
+  else S.items.forEach(i=>S.selected.delete(i.id));
   render();
 });
 document.getElementById('btnAdd').addEventListener('click', addUrls);
@@ -544,8 +531,12 @@ document.getElementById('btnAddDir').addEventListener('click', ()=>{
     }).catch(err=>toast(err));
 });
 document.getElementById('btnSettings').addEventListener('click', openSettings);
-document.getElementById('filterSel').addEventListener('change', e=>{ S.filter=e.target.value; render(); });
 document.getElementById('btnClearTemp').addEventListener('click', ()=>INVOKE('clear_temp').then(()=>toast('临时文件已清理')).catch(err=>toast(err)));
+document.getElementById('btnClearList').addEventListener('click', ()=>{
+  if(!S.items.length){toast('列表已是空的');return;}
+  if(!confirm('清空列表全部 '+S.items.length+' 个条目？'))return;
+  Promise.all(S.items.map(i=>INVOKE('remove_item',{id:i.id}).catch(()=>{}))).then(()=>{S.items=[];S.selected.clear();render();toast('列表已清空');});
+});
 document.getElementById('btnDelSel').addEventListener('click', ()=>{
   if(!confirm('删除选中的 '+S.selected.size+' 个条目？'))return;
   Promise.all([...S.selected].map(id=>INVOKE('remove_item',{id}).catch(()=>{}))).then(()=>{S.selected.clear();render();});
