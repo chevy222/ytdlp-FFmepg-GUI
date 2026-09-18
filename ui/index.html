@@ -255,8 +255,6 @@
     <button id="btnSettings" class="btn ghost" title="设置">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     </button>
-    <input type="file" id="fileInput" multiple accept="video/*,.mp4,.mkv,.mov,.webm,.avi,.flv,.ts,.m4v" style="display:none">
-    <input type="file" id="dirInput" webkitdirectory style="display:none">
   </div>
 
   <!-- ===== 批量操作栏 ===== -->
@@ -750,7 +748,10 @@ function startCountdown(id){
   stopCountdown(id);
   let n=5; S.cdSecs[id]=n;
   const t=setInterval(()=>{
-    if(!S.items.find(i=>i.id===id)){clearInterval(t);delete S.cdTimer[id];delete S.cdSecs[id];return;}
+    const it=S.items.find(i=>i.id===id);
+    // 条目被删，或状态已离开 Ready（手动下载/重解析/需登录）→ 停表，
+    // 否则到点会对非就绪条目发起下载并弹错误
+    if(!it||it.status!=='Ready'||it.kind!=='UrlTask'){clearInterval(t);delete S.cdTimer[id];delete S.cdSecs[id];render();return;}
     n--;
     if(n<=0){clearInterval(t);delete S.cdTimer[id];delete S.cdSecs[id];render();startDownload(id);return;}
     S.cdSecs[id]=n; render();
@@ -1034,7 +1035,12 @@ async function init(){
       const it=S.items.find(i=>i.id===e.payload.id);
       if(it&&it.kind==='UrlTask'&&it.status==='Ready')startCountdown(it.id);
     });
-    LISTEN('login:done', ()=>{ toast('Cookie 已保存，正在重新解析需要登录的条目'); });
+    LISTEN('login:done', ()=>{
+      toast('Cookie 已保存，正在重新解析需要登录的条目');
+      // 真正触发重解析：NeedLogin 条目逐个 retry（后端 retry_item 允许该状态）
+      S.items.filter(i=>i.status==='NeedLogin')
+        .forEach(i=>INVOKE('retry_item',{id:i.id}).catch(()=>{}));
+    });
     LISTEN('cookies:changed', ()=>{ if(curPage==='cookie')loadCookieList(); });
     LISTEN('tool:progress', e=>{
       const p=e.payload; if(!p||!p.tool)return;

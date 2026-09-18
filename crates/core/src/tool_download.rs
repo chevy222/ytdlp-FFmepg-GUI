@@ -195,6 +195,11 @@ impl ToolDownloader {
         let out_str = raw.to_string_lossy().into_owned();
         let mut cmd = std::process::Command::new("curl");
         cmd.args(["-L", "--fail", "-sS", "-o", &out_str, url]);
+        // stderr 必须 pipe：否则 wait_with_output 拿不到 curl 的报错，
+        // 下载失败时用户只能看到"下载失败 <url>"而无任何原因。
+        // -sS 已静默进度，出错才输出，短文本不会撑爆管道缓冲。
+        cmd.stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
         crate::exec::hide_console(&mut cmd);
         let mut child = cmd
             .spawn()

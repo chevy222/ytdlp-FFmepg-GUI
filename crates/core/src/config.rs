@@ -4,34 +4,33 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{paths::atomic_write_json, CoreError, Result};
+use crate::cookies::host_from_url;
+use crate::paths::{atomic_write_json, corrupt_backup_path};
+use crate::{CoreError, Result};
 
 /// 下载段（§3.6 下载分组 + §7.2）。
+///
+/// `Default` 返回规范默认值（1080/4/3/true），配合容器级 `#[serde(default)]`：
+/// 段内**缺失**字段取 Default 的同名值；用户显式写 `0`/`false` 属于本人选择，
+/// 予以保留。字段级 `serde(default)` 补的是类型零值，做不到这一点。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DownloadConfig {
     /// 画质上限（短边），超限自动降分辨率转码（DL-03/DL-04）
-    #[serde(default)]
     pub max_h: u32,
     /// 下载高度硬上限（MAX_DL_H 语义）
-    #[serde(default)]
     pub max_dl_h: u32,
     /// 并发分片数（默认 4）
-    #[serde(default)]
     pub fragments: u32,
     /// 重试次数
-    #[serde(default)]
     pub retries: u32,
-    /// 仅音频默认
-    #[serde(default)]
+    /// 仅音频默认（新 URL 条目的初始 audio_only）
     pub audio_only: bool,
     /// 播放列表默认（默认关）
-    #[serde(default)]
     pub playlist: bool,
     /// 嵌入封面/元数据
-    #[serde(default)]
     pub embed_cover: bool,
     /// 文件名模板（纯标题/标题+ID/UP主-标题/日期-标题）
-    #[serde(default)]
     pub filename_template: String,
 }
 
@@ -52,25 +51,17 @@ impl Default for DownloadConfig {
 
 /// 转码段（§3.6 转码分组 + §7.2；x265 CRF 固定 23 不落配置项）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TranscodeConfig {
-    #[serde(default)]
     pub max_w: u32,
-    #[serde(default)]
     pub max_h: u32,
     /// 码率封顶 kbps
-    #[serde(default)]
     pub brcap_kbps: Option<u32>,
-    /// 兜底码率 kbps
-    #[serde(default)]
-    pub br_default_kbps: u32,
     /// 编码器模式：auto | libx265 | nvenc | amf
-    #[serde(default)]
     pub force_encoder_mode: String,
     /// QSV low_power
-    #[serde(default)]
     pub low_power: bool,
     /// 保留封面
-    #[serde(default)]
     pub keep_cover: bool,
 }
 
@@ -80,7 +71,6 @@ impl Default for TranscodeConfig {
             max_w: 1920,
             max_h: 1080,
             brcap_kbps: None,
-            br_default_kbps: 8000,
             force_encoder_mode: "auto".into(),
             low_power: true,
             keep_cover: true,
@@ -88,29 +78,23 @@ impl Default for TranscodeConfig {
     }
 }
 
-/// 通用段（§3.6 通用分组：输出/音量/并发/检查更新/历史上限/清理解析缓存）。
+/// 通用段（§3.6 通用分组：输出/音量/并发/检查更新/历史上限）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GeneralConfig {
     /// 默认输出目录（默认桌面）
-    #[serde(default)]
     pub default_output_dir: Option<String>,
     /// 碰撞命名策略：auto_inc | skip
-    #[serde(default)]
     pub collision_policy: String,
     /// 音量归一化（下载后处理与转码共用）
-    #[serde(default)]
     pub normalize_audio: bool,
-    /// 音量增益上限 dB（默认 24）
-    #[serde(default)]
+    /// 音量增益上限 dB（默认 24；负值无意义，加载时归一为 0）
     pub max_gain_db: f32,
     /// 并发任务数（全局：下载/转码/合并共享，默认 3）
-    #[serde(default)]
     pub concurrency: u32,
     /// 启动时检查更新（默认开启）
-    #[serde(default)]
     pub check_update: bool,
     /// 历史上限（默认 100，上限 200，N5 统一）
-    #[serde(default)]
     pub history_limit: usize,
 }
 
@@ -134,17 +118,13 @@ impl GeneralConfig {
 
 /// 依赖段（§3.6 依赖分组：路径输入框留空＝PATH，PO-Token 默认启用）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DependenciesConfig {
-    #[serde(default)]
     pub yt_dlp_path: Option<String>,
-    #[serde(default)]
     pub ffmpeg_path: Option<String>,
-    #[serde(default)]
     pub ffprobe_path: Option<String>,
-    #[serde(default)]
     pub deno_path: Option<String>,
     /// PO-Token 服务（YouTube 风控验证令牌，deno 跑 potoken 生成器），默认启用
-    #[serde(default)]
     pub potoken_enabled: bool,
 }
 
@@ -162,38 +142,33 @@ impl Default for DependenciesConfig {
 
 /// 网络段（§3.6 网络分组：代理地址 + 站点分流）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NetworkConfig {
-    #[serde(default)]
     pub proxy_url: String,
     /// 站点分流：站点 -> 是否走代理（其余直连）
-    #[serde(default)]
     pub site_proxy: std::collections::HashMap<String, bool>,
 }
 
 impl NetworkConfig {
     /// 站点分流解析：返回该 URL 应使用的代理地址。
     /// 白名单规则：仅分流中勾选（=走代理）的站点使用代理，其余一律直连；
-    /// 代理地址为空时全部直连。
+    /// 代理地址为空时全部直连。多条站点规则命中同一 host 时取**最长标签**
+    /// （最具体优先），避免 HashMap 随机迭代导致同 URL 结果不定。
     pub fn resolve_proxy(&self, url: &str) -> Option<String> {
         if self.proxy_url.is_empty() {
             return None;
         }
-        let host = host_of(url)?;
-        for (site, enabled) in &self.site_proxy {
-            if site_matches(site, &host) {
-                return if *enabled { Some(self.proxy_url.clone()) } else { None };
-            }
+        let host = host_from_url(url)?;
+        let best = self
+            .site_proxy
+            .iter()
+            .filter(|(site, _)| site_matches(site, &host))
+            .max_by_key(|(site, _)| site.trim().trim_start_matches('.').len());
+        match best {
+            Some((_, true)) => Some(self.proxy_url.clone()),
+            _ => None,
         }
-        None
     }
-}
-
-/// 从 URL 提取小写 host（去协议/端口/路径）。
-fn host_of(url: &str) -> Option<String> {
-    let u = url.trim();
-    let after = u.split_once("://").map(|x| x.1).unwrap_or(u);
-    let host = after.split(['/', '?', '#']).next()?.split(':').next()?.to_string();
-    Some(host.to_lowercase())
 }
 
 /// 站点匹配：精确相等或子域后缀（bilibili.com 命中 www.bilibili.com）。
@@ -205,46 +180,49 @@ fn site_matches(site: &str, host: &str) -> bool {
     host == site || host.ends_with(&format!(".{site}"))
 }
 
+/// 读取并剥掉 UTF-8 BOM（Windows 记事本编辑过的配置带 BOM，
+/// serde_json 对 BOM 报"expected value"会被误判为损坏）。
+fn read_text_stripping_bom(path: &Path) -> Result<String> {
+    let text = std::fs::read_to_string(path)?;
+    Ok(text.strip_prefix('\u{feff}').map(str::to_string).unwrap_or(text))
+}
+
 /// 根配置（§7.2）。
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppConfig {
-    #[serde(default)]
     pub download: DownloadConfig,
-    #[serde(default)]
     pub transcode: TranscodeConfig,
-    #[serde(default)]
     pub general: GeneralConfig,
-    #[serde(default)]
     pub dependencies: DependenciesConfig,
-    #[serde(default)]
     pub network: NetworkConfig,
 }
 
 impl AppConfig {
-    /// 从文件加载；文件缺失返回默认；损坏则备份（config.json.corrupt-<ts>）后回退默认（§3.7 规则）。
+    /// 加载；文件缺失返回默认；损坏则备份（`<原名>.corrupt-<ts>.json`）后回退默认（§3.7 规则）。
+    /// `max_gain_db < 0` 会触发 `f32::clamp` panic，加载时归一为 0。
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let text = std::fs::read_to_string(path)?;
-        match serde_json::from_str::<AppConfig>(&text) {
-            Ok(c) => Ok(c),
+        let text = read_text_stripping_bom(path)?;
+        let mut cfg: AppConfig = match serde_json::from_str(&text) {
+            Ok(c) => c,
             Err(e) => {
-                let backup = path.with_extension(format!(
-                    "corrupt-{}.json",
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0)
-                ));
-                let _ = std::fs::copy(path, &backup);
-                Err(CoreError::ConfigCorrupt(format!(
-                    "{}（已备份到 {}）",
-                    e,
-                    backup.display()
-                )))
+                let backup = corrupt_backup_path(path);
+                let copied = std::fs::copy(path, &backup).is_ok();
+                let detail = if copied {
+                    format!("（已备份到 {}）", backup.display())
+                } else {
+                    format!("（备份到 {} 失败）", backup.display())
+                };
+                return Err(CoreError::ConfigCorrupt(format!("{}{}", e, detail)));
             }
+        };
+        if cfg.general.max_gain_db < 0.0 {
+            cfg.general.max_gain_db = 0.0;
         }
+        Ok(cfg)
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
@@ -285,6 +263,7 @@ mod tests {
         let root = tempdir().unwrap();
         let c = AppConfig::load(&root.path().join("nope.json")).unwrap();
         assert_eq!(c.general.concurrency, 3);
+        assert!(c.download.embed_cover);
     }
 
     #[test]
@@ -334,6 +313,25 @@ mod tests {
     }
 
     #[test]
+    fn resolve_proxy_overlapping_rules_most_specific_wins() {
+        // 重叠规则：bilibili.com=false 与 www.bilibili.com=true 同时存在时，
+        // 结果必须是确定的（最具体=最长标签优先），不随 HashMap 迭代序漂移
+        let mut n = NetworkConfig {
+            proxy_url: "socks5://127.0.0.1:10808".into(),
+            ..Default::default()
+        };
+        n.site_proxy.insert("bilibili.com".into(), false);
+        n.site_proxy.insert("www.bilibili.com".into(), true);
+        for _ in 0..20 {
+            assert_eq!(
+                n.resolve_proxy("https://www.bilibili.com/video/BV1xx"),
+                Some("socks5://127.0.0.1:10808".to_string())
+            );
+            assert_eq!(n.resolve_proxy("https://api.bilibili.com/x"), None);
+        }
+    }
+
+    #[test]
     fn corrupt_config_backed_up_and_errors() {
         let root = tempdir().unwrap();
         let p = root.path().join("config.json");
@@ -349,12 +347,48 @@ mod tests {
     }
 
     #[test]
+    fn bom_config_loads() {
+        let root = tempdir().unwrap();
+        let p = root.path().join("config.json");
+        std::fs::write(&p, "\u{feff}{\"general\":{\"concurrency\":6}}").unwrap();
+        let c = AppConfig::load(&p).unwrap();
+        assert_eq!(c.general.concurrency, 6);
+    }
+
+    #[test]
+    fn negative_gain_db_normalized() {
+        let root = tempdir().unwrap();
+        let p = root.path().join("config.json");
+        std::fs::write(&p, r#"{"general":{"max_gain_db":-5.0}}"#).unwrap();
+        let c = AppConfig::load(&p).unwrap();
+        assert_eq!(c.general.max_gain_db, 0.0);
+    }
+
+    #[test]
     fn partial_config_fills_missing_with_defaults() {
-        // 旧版本/缺段配置应能加载并补默认（serde default）
-        let json = r#"{"general":{"concurrency":6}}"#;
+        // 旧版本/字段缺失：容器级 serde(default) 取 Default 的规范值（非零值）
+        let json = r#"{"general":{"concurrency":6},"download":{}}"#;
         let c: AppConfig = serde_json::from_str(json).unwrap();
         assert_eq!(c.general.concurrency, 6);
         assert_eq!(c.download.fragments, 4);
+        assert_eq!(c.download.filename_template, "纯标题");
+        // 用户显式写 0 属于本人选择，予以保留
+        let json = r#"{"download":{"fragments":0}}"#;
+        let c: AppConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(c.download.fragments, 0);
+    }
+
+    #[test]
+    fn missing_section_fills_spec_defaults() {
+        // 整段缺失 → 补齐规范默认值
+        let root = tempdir().unwrap();
+        let p = root.path().join("config.json");
+        std::fs::write(&p, r#"{"general":{"concurrency":6}}"#).unwrap();
+        let c = AppConfig::load(&p).unwrap();
+        assert_eq!(c.general.concurrency, 6);
+        assert_eq!(c.download.fragments, 4);
+        assert!(c.download.embed_cover);
         assert!(c.dependencies.potoken_enabled);
+        assert_eq!(c.transcode.max_w, 1920);
     }
 }

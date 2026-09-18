@@ -83,16 +83,6 @@ impl CookieStore {
         Ok(())
     }
 
-    /// 匹配可用 cookie 文件：精确 host → 站点级回退 → X↔twitter 互退。
-    /// 返回存在的第一个候选文件路径（供 yt-dlp --cookies）。
-    pub fn match_file(&self, host: &str) -> Option<PathBuf> {
-        let candidates = cookie_candidates(host);
-        candidates
-            .iter()
-            .map(|h| self.host_file(h))
-            .find(|f| f.is_file())
-    }
-
     /// 导出匹配站点的 Netscape cookies.txt 到目标路径（供 yt-dlp）。
     /// 合并所有匹配候选的 cookie；无任何 cookie 返回 None。
     pub fn export_netscape(&self, host: &str, dest: &Path) -> Result<Option<PathBuf>> {
@@ -120,14 +110,22 @@ impl CookieStore {
             if c.value.len() > MAX_COOKIE_VALUE_LEN {
                 continue;
             }
-            // domain(前缀制) \t includeSubdomains \t path \t secure \t expires \t name \t value
+            // Netscape 行：domain(前缀点=跨子域) \t includeSubdomains \t path \t secure \t expires \t name \t value
+            // domain 必须保留原始前导点：剥掉点再标 TRUE 自相矛盾——
+            // 无点域是 host-only（www 不携带），且新版 CPython MozillaCookieJar 会
+            // 直接断言失败导致 yt-dlp 拒载整个文件。
             let (domain, include_sub) = if c.domain.starts_with('.') {
-                (c.domain.trim_start_matches('.'), "TRUE")
+                (c.domain.as_str(), "TRUE")
             } else {
                 (c.domain.as_str(), "FALSE")
             };
             let secure = if c.secure { "TRUE" } else { "FALSE" };
-            let expires = c.expires.map(|e| e as i64).unwrap_or(0);
+            // 会话 cookie（无 expires）输出空字段：expires=0 在旧版 CPython
+            // MozillaCookieJar 里被当"1970 已过期"丢弃，空串才是"会话"语义的交集。
+            let expires = match c.expires {
+                Some(e) => format!("{}", e as i64),
+                None => String::new(),
+            };
             let value = c.value.replace(['\t', '\n'], " ");
             out.push_str(&format!(
                 "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
@@ -162,6 +160,11 @@ fn sanitize_host(host: &str) -> String {
 pub fn cookie_candidates(host: &str) -> Vec<String> {
     let h = host.to_lowercase();
     let mut out = vec![h.clone()];
+    let push_unique = |out: &mut Vec<String>, s: String| {
+        if !out.contains(&s) {
+            out.push(s);
+        }
+    };
     // 站点级回退：去掉常见子域前缀取父域
     let parent = h
         .rsplit_once('.')
@@ -178,19 +181,18 @@ pub fn cookie_candidates(host: &str) -> Vec<String> {
         })
         .unwrap_or_else(|| h.clone());
     if parent != h {
-        out.push(parent.clone());
+        push_unique(&mut out, parent.clone());
         // 补充常见子域（www）
         if !parent.starts_with("www.") {
-            out.push(format!("www.{}", parent));
+            push_unique(&mut out, format!("www.{}", parent));
         }
     }
     // X ↔ twitter 姊妹域名互退
     match h.as_str() {
-        "x.com" | "www.x.com" => out.push("twitter.com".into()),
-        "twitter.com" | "www.twitter.com" => out.push("x.com".into()),
+        "x.com" | "www.x.com" => push_unique(&mut out, "twitter.com".into()),
+        "twitter.com" | "www.twitter.com" => push_unique(&mut out, "x.com".into()),
         _ => {}
     }
-    out.dedup();
     out
 }
 
@@ -230,7 +232,8 @@ mod tests {
         let c = cookie_candidates("www.bilibili.com");
         assert_eq!(c[0], "www.bilibili.com");
         assert!(c.contains(&"bilibili.com".to_string()));
-        assert!(c.contains(&"www.bilibili.com".to_string()));
+        // 去重：不应重复出现 www.bilibili.com
+        assert_eq!(c.len(), c.iter().collect::<std::collections::HashSet<_>>().len());
     }
 
     #[test]
@@ -258,44 +261,42 @@ mod tests {
     }
 
     #[test]
-    fn match_file_falls_back_to_parent() {
-        let root = tempdir().unwrap();
-        let store = CookieStore::new(root.path().join("cookies"));
-        store
-            .save_host("bilibili.com", vec![ck("SESSDATA", "x", ".bilibili.com")])
-            .unwrap();
-        // www 子域能回退到父域 cookie 文件
-        let m = store.match_file("www.bilibili.com");
-        assert!(m.is_some());
-        assert!(m.unwrap().ends_with("bilibili.com.json"));
-    }
-
-    #[test]
-    fn match_file_x_twitter_fallback() {
-        let root = tempdir().unwrap();
-        let store = CookieStore::new(root.path().join("cookies"));
-        store
-            .save_host("twitter.com", vec![ck("auth_token", "v", ".twitter.com")])
-            .unwrap();
-        assert!(store.match_file("x.com").is_some());
-    }
-
-    #[test]
     fn export_netscape_merges_and_formats() {
         let root = tempdir().unwrap();
         let store = CookieStore::new(root.path().join("cookies"));
         store
             .save_host("youtube.com", vec![ck("SID", "v1", ".youtube.com")])
             .unwrap();
+        // host-only cookie（无前导点）应输出 FALSE
         store
-            .save_host("www.youtube.com", vec![ck("VISITOR", "v2", ".youtube.com")])
+            .save_host(
+                "www.youtube.com",
+                vec![ck("VISITOR", "v2", "youtube.com")],
+            )
             .unwrap();
         let dest = root.path().join("netscape.txt");
         let out = store.export_netscape("www.youtube.com", &dest).unwrap();
         assert!(out.is_some());
         let text = std::fs::read_to_string(&dest).unwrap();
-        assert!(text.contains("youtube.com\tTRUE\t/\tTRUE\t0\tSID\tv1"));
-        assert!(text.contains("VISITOR"));
+        // 带点 domain 保留前导点 + TRUE（跨子域）
+        assert!(text.contains(".youtube.com\tTRUE\t/\tTRUE\t\tSID\tv1"));
+        // 无点 domain + FALSE（host-only）
+        assert!(text.contains("youtube.com\tFALSE\t/\tTRUE\t\tVISITOR\tv2"));
+    }
+
+    #[test]
+    fn export_netscape_session_cookie_empty_expires() {
+        let root = tempdir().unwrap();
+        let store = CookieStore::new(root.path().join("cookies"));
+        // expires=None（会话 cookie）：expires 字段必须为空，不能是 0
+        store
+            .save_host("example.com", vec![ck("SESS", "v", ".example.com")])
+            .unwrap();
+        let dest = root.path().join("n.txt");
+        store.export_netscape("example.com", &dest).unwrap();
+        let text = std::fs::read_to_string(&dest).unwrap();
+        assert!(text.contains("\tTRUE\t/\tTRUE\t\tSESS\tv"), "got: {text}");
+        assert!(!text.contains("TRUE\t0\tSESS"));
     }
 
     #[test]

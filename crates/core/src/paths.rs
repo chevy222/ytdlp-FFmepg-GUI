@@ -84,15 +84,36 @@ impl Paths {
     }
 }
 
-/// JSON 原子写：先写临时文件再 rename，避免中途损坏（§3.7 规则）。
+/// 损坏备份路径：`<原名>.corrupt-<epoch秒>.json`（config/history 统一口径，
+/// 多次损坏不互相覆盖）。
+pub fn corrupt_backup_path(path: &Path) -> PathBuf {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    PathBuf::from(format!("{}.corrupt-{}.json", path.display(), ts))
+}
+
+/// JSON 原子写：先写临时文件（含 fsync）再 rename，避免中途损坏（§3.7 规则）。
 pub fn atomic_write_json<T: serde::Serialize>(path: &Path, value: &T) -> crate::Result<()> {
     let tmp = path.with_extension("json.tmp");
     let bytes = serde_json::to_vec_pretty(value)?;
-    std::fs::write(&tmp, &bytes)?;
+    // 写入 + fsync：掉电时保证 rename 之前数据页已落盘（只 rename 不 fsync
+    // 可能出现"元数据已提交、数据未提交"的损坏文件）。
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(&bytes)?;
+        f.sync_all()?;
+    }
     // 直接 rename 覆盖目标：std::fs::rename 在 Windows 上走 MoveFileExW
     // （MOVEFILE_REPLACE_EXISTING），在类 Unix 上是原子替换。
     // 不要"先 remove 再 rename"——那会在两步之间制造文件缺失窗口，崩溃即丢整份配置。
-    std::fs::rename(&tmp, path)?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        // rename 失败（如目标被其他程序占用）时清理 tmp，避免累积 *.json.tmp 垃圾
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     Ok(())
 }
 

@@ -353,7 +353,6 @@ pub fn parse_ytdlp_json(text: &str) -> Result<UrlProbe> {
             .map(|f| f.height.unwrap_or(0))
             .max(),
         container: None, // 下载容器由所选格式决定，展示列用 URL 行内格式按钮
-        formats: formats.iter().map(|f| f.label.clone()).collect(),
         download_formats: formats,
         has_cover: thumbnail.is_some(),
         ..Default::default()
@@ -586,8 +585,6 @@ mod tests {
         assert!(audio.audio_only);
         assert!(audio.label.contains("仅音频"));
         assert!(audio.label.contains("AAC"));
-        // 画质/格式展示列
-        assert!(p.meta.formats.iter().any(|l| l.contains("1080P")));
     }
 
     #[test]

@@ -72,7 +72,7 @@ checkout → 安装 rust stable(+rustfmt,clippy) → 缓存
 
 ## 4. 质量基线
 
-- `cargo test -p ytdlp-core`：**129 个用例**（`#[cfg(test)]` 静态计数，分布：model 30、download 14、probe 13、transcode 11、history 9、config 8、cookies 8、exec 8、merge 8、worker 6、cli 5、paths 4、tool_download 3、thumbs 2）。
+- `cargo test -p ytdlp-core`：**139 个用例**（`#[cfg(test)]` 静态计数，分布：model 31、download 15、probe 13、transcode 11、config 12、history 10、cookies 7、exec 8、merge 8、worker 6、cli 5、paths 4、timefmt 4、tool_download 3、thumbs 2）。另有 `src-tauri`（login）4 个用例，`cargo test --workspace` 时一并执行（CI 门禁只跑 core）。
 - `cargo clippy -p ytdlp-core --all-targets -- -D warnings` 与 `cargo clippy -p ytdlp-gui --all-targets -- -D warnings` 均为 CI 门禁。
 - 核心层测试全部平台无关（不依赖 Windows 特有 API、不硬编码 `.exe` 后缀——按 `cfg(windows)` 断言）；涉及子进程的测试只做存在性/解析断言，不依赖外部工具是否安装。
 
@@ -83,6 +83,8 @@ checkout → 安装 rust stable(+rustfmt,clippy) → 缓存
 - **状态变更**：业务状态迁移必须走 `model::transition` 白名单校验；进度类高频更新只 `emit` 前端不落盘，状态迁移才持久化 history.json。
 - **文件安全**：JSON 原子写（临时文件 + 单次 rename）；媒体产物先写临时文件、校验后 rename 覆盖；取消/失败清理本任务临时目录与半成品，绝不删除 exe 同级目录之外的内容。
 - **子进程**：全部经 `Command` 参数化调用（不拼 shell）；Windows 下加 `CREATE_NO_WINDOW`；取消用 `taskkill /PID <pid> /T /F` 终止进程树。
+- **锁纪律**：`history` 等全局 `std::sync::Mutex` 不可重入——持锁期间不做文件 IO、不 `emit` 事件、不调用会再次加锁的函数（`log_item`/`update_item` 先出锁再调用）；Cookie 导出等 IO 在锁外做（锁内只克隆数据）。
+- **日期/时间**：一律走 `crates/core/src/timefmt.rs`（epoch 秒 + 本地时区偏移），不按 UTC 手算日期。
 - **注释语言**：中文；注释说明"为什么"（约束、坑、外部工具行为），不复述代码。
 - 外部工具参数约束（封面映射、`-tag:v:0`、偶数对齐、`--ignore-errors` 等）见实现说明 §11 —— **改动 ffmpeg/yt-dlp 参数前必读**。
 
@@ -104,4 +106,4 @@ checkout → 安装 rust stable(+rustfmt,clippy) → 缓存
 7. 合并：勾选 ≥2 段（含参数一致与不一致各一组）→ 合并面板排序 → 输出可播放、参数一致组日志显示"直拼（零重编码）"。
 8. 取消：下载/转码中断时点"取消"，确认进程树被终止、本任务临时目录被清理、状态为"已取消"，且**其它并发任务的临时目录不受影响**。
 9. 需要登录：选一个需登录站点触发"需要登录" → "去登录"完成登录 → 自动重新解析并可继续。
-10. CLI/单实例：`ytdlp-FFmpeg-GUI --url <URL>` 启动新实例；应用已运行时再次执行该命令，URL 应进入现有实例列表。
+10. CLI/单实例：`ytdlp-FFmpeg-GUI --url <URL>` 启动新实例；应用已运行时再次执行该命令，URL 应进入现有实例列表；`--dir`/`--cookies` 等覆盖项**单独出现**（不带 URL）也应在本实例生效（本次调用内）。

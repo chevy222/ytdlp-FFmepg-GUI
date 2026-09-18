@@ -10,14 +10,14 @@ mod state;
 use tauri::Manager;
 use ytdlp_core::model::Status;
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-/// 将 CLI 参数应用到主实例：存 overrides 并把 URL 投入列表解析。
+/// 将 CLI 参数应用到主实例：存 overrides（无论是否带 URL）并把 URL 投入列表解析。
+/// `--dir`/`--cookies` 等覆盖单独出现时也必须生效，不能只在带 URL 时应用。
 fn apply_cli(app: &tauri::AppHandle) {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cli = ytdlp_core::cli::parse_cli_args(&args);
+    let st = app.state::<state::AppState>();
+    *st.cli.lock().unwrap() = state::CliOverrides::from(cli.clone());
     if !cli.urls.is_empty() {
-        let st = app.state::<state::AppState>();
-        *st.cli.lock().unwrap() = state::CliOverrides::from(cli.clone());
         let _ = commands::add_url(app.clone(), cli.urls);
     }
 }
@@ -26,13 +26,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            // 第二实例：解析 argv 并把 URL/覆盖转发给已运行实例（§UL-09 单实例转发）
+            // 第二实例：解析 argv 并把 URL/覆盖转发给已运行实例（§UL-09 单实例转发）。
+            // 覆盖项单独出现（如仅 --dir）也要转发。
             let args: Vec<String> = argv.iter().skip(1).map(|s| s.to_string()).collect();
             let cli = ytdlp_core::cli::parse_cli_args(&args);
+            let st = app.state::<state::AppState>();
+            *st.cli.lock().unwrap() = state::CliOverrides::from(cli.clone());
             if !cli.urls.is_empty() {
-                let st = app.state::<state::AppState>();
-                *st.cli.lock().unwrap() = state::CliOverrides::from(cli.clone());
-                let _ = commands::add_url(app.app_handle().clone(), cli.urls);
+                let _ = commands::add_url(app.clone(), cli.urls);
             }
         }))
         .manage(state::AppState::new())
@@ -72,11 +73,15 @@ pub fn run() {
             }
             // CLI 启动参数（§UL-09）：首实例带 --url 等直接执行
             apply_cli(app.handle());
-            // 启动时恢复队列（UL-10）：中断的任务标记失败，可重试
+            // 启动时恢复队列（UL-10）：中断的任务标记失败，可重试。
+            // NeedLogin 除外 —— 它不是"中断"，未登录的状态跨重启依然成立
             {
                 let mut hist = state.history.lock().unwrap();
                 for item in hist.items.iter_mut() {
-                    if !item.status.is_terminal() && item.status != Status::Ready {
+                    if !item.status.is_terminal()
+                        && item.status != Status::Ready
+                        && item.status != Status::NeedLogin
+                    {
                         item.status = Status::Failed;
                         item.error = Some("应用重启，任务中断".into());
                         item.push_log("应用重启，任务中断（可重试）".to_string());

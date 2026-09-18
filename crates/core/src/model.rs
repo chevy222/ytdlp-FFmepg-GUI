@@ -35,9 +35,12 @@ impl Status {
         matches!(self, Self::Done | Self::Failed | Self::Canceled)
     }
 
-    /// 是否为可恢复状态（失败分级：可恢复给操作指引）。
-    pub fn is_recoverable(self) -> bool {
-        matches!(self, Self::NeedLogin | Self::Failed)
+    /// 是否为处理中（下载/后处理/转码/合并，取消按钮出现的状态）。
+    pub fn is_processing(self) -> bool {
+        matches!(
+            self,
+            Self::Downloading | Self::PostProcessing | Self::Transcoding | Self::Merging
+        )
     }
 
     /// UI 文案（状态用颜色 + 文字双表达，见 §6.3）。
@@ -55,24 +58,6 @@ impl Status {
             Self::NeedLogin => "需要登录",
         }
     }
-
-    /// 状态分组（筛选下拉：全部/解析中/已就绪/处理中/已完成/失败/需要登录）。
-    pub fn group(self) -> StatusGroup {
-        match self {
-            Self::Downloading | Self::PostProcessing | Self::Transcoding | Self::Merging => {
-                StatusGroup::Working
-            }
-            _ => StatusGroup::Single(self),
-        }
-    }
-}
-
-/// 筛选分组（下载中/后处理/转码/合并归入"处理中"）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StatusGroup {
-    All,
-    Single(Status),
-    Working,
 }
 
 /// 旋转角度（0°/90°/180°/270°，封面旋转箭头指定，随条目保存，转码生效）。
@@ -182,8 +167,9 @@ pub struct MediaMeta {
     /// 仅记录源文件标记；实际转码采用条目 `rot_angle`（TC-04 手动旋转）。
     #[serde(default)]
     pub rotate_tag: Option<i32>,
-    /// URL 解析所得清晰度/格式列表（MD-01）
-    pub formats: Vec<String>,
+    /// 源编码宽度（竖屏源与 rotate_tag 配合判定"短边"分辨率，MD-02/§8）。
+    #[serde(default)]
+    pub width: Option<u32>,
     /// 结构化下载格式列表（DL-02 格式选择；含 format_id 供下载使用）
     #[serde(default)]
     pub download_formats: Vec<DownloadFormat>,
@@ -225,21 +211,29 @@ impl DownloadFormat {
         }
         if let Some(c) = &self.vcodec {
             let cl = c.to_lowercase();
-            let short = match cl.as_str() {
-                "av01" => "AV1",
-                "avc1" | "h264" | "h.264" => "H.264",
-                "hevc" | "h265" | "h.265" => "H.265",
-                "vp9" => "VP9",
-                other => other,
+            // yt-dlp 的 vcodec 常带 profile 后缀（vp09.00.50.08 / av01.0.08M.08），
+            // 必须前缀匹配而非精确匹配，否则整串塞进标签。
+            let short = if cl.starts_with("av01") {
+                "AV1"
+            } else if cl.starts_with("avc1") || cl.starts_with("h264") || cl.starts_with("h.264") {
+                "H.264"
+            } else if cl.starts_with("hevc") || cl.starts_with("h265") || cl.starts_with("h.265") {
+                "H.265"
+            } else if cl.starts_with("vp9") || cl.starts_with("vp09") {
+                "VP9"
+            } else {
+                c.as_str()
             };
             parts.push(short.to_string());
         }
         if let Some(a) = &self.acodec {
             let al = a.to_lowercase();
-            let short = match al.as_str() {
-                "mp4a" | "aac" => "AAC",
-                "opus" => "Opus",
-                other => other,
+            let short = if al.starts_with("mp4a") || al.starts_with("aac") {
+                "AAC"
+            } else if al.starts_with("opus") {
+                "Opus"
+            } else {
+                a.as_str()
             };
             parts.push(short.to_string());
         }
@@ -254,6 +248,18 @@ impl DownloadFormat {
 }
 
 impl MediaMeta {
+    /// 分辨率短边：竖屏源（rotate_tag 90°/270°）取 min(宽,高)，其余取 height。
+    /// 文档 §8 口径"分辨率(4K/2K/xP)"按短边计（§6.2）。
+    pub fn short_edge(&self) -> Option<u32> {
+        let h = self.height?;
+        let rotated = matches!(self.rotate_tag, Some(90) | Some(-90) | Some(270) | Some(-270));
+        if rotated {
+            Some(self.width.map(|w| w.min(h)).unwrap_or(h))
+        } else {
+            Some(h)
+        }
+    }
+
     /// 画质/格式列渲染（12 项字段，自动换行；需求文档 §6.2）。
     ///
     /// 字段全集：容器 · 分辨率 · 编码器 · 视频码率 · 帧率 · 音频编码 ·
@@ -264,14 +270,19 @@ impl MediaMeta {
         if let Some(c) = &self.container {
             parts.push(c.clone());
         }
-        if let Some(h) = self.height {
+        if let Some(h) = self.short_edge() {
             parts.push(resolution_label(h));
         }
         if let Some(c) = &self.vcodec {
             parts.push(c.clone());
         }
         if let Some(b) = self.vbitrate_kbps {
-            parts.push(format!("{}Mbps", (b + 500) / 1000));
+            // 低码率四舍五入会显示 0Mbps，低于 1Mbps 时用 kbps 口径
+            if b >= 1000 {
+                parts.push(format!("{}Mbps", (b + 500) / 1000));
+            } else {
+                parts.push(format!("{}k", b));
+            }
         }
         if let Some(f) = self.fps {
             parts.push(format!("{:.0}fps", f));
@@ -376,9 +387,6 @@ pub struct MediaItem {
     pub format_id: Option<String>,
     #[serde(default)]
     pub audio_only: bool,
-    /// 队列持久化标记
-    #[serde(default)]
-    pub persist: bool,
     #[serde(default)]
     pub updated_at: String,
     /// 时间范围下载（DL-12）：起止 "HH:MM:SS"（yt-dlp --download-sections）
@@ -409,7 +417,6 @@ impl MediaItem {
             rot_angle: RotAngle::ZERO,
             format_id: None,
             audio_only: false,
-            persist: false,
             updated_at: String::new(),
         }
     }
@@ -438,18 +445,6 @@ impl MediaItem {
             self.log.pop_front();
         }
     }
-
-    /// 名称副行：站点/本地 · URL 或本地路径（§6.1）。
-    pub fn subline(&self) -> String {
-        if let Some(url) = &self.url {
-            let site = self.site.as_deref().unwrap_or("站点");
-            format!("{} · {}", site, url)
-        } else if let Some(p) = &self.path {
-            format!("本地文件 · {}", p)
-        } else {
-            String::new()
-        }
-    }
 }
 
 /// 状态机：合法迁移校验（§3.1 UL-06）。
@@ -460,8 +455,8 @@ impl MediaItem {
 /// Ready   -> Downloading | Transcoding | Merging | Canceled
 /// Downloading -> PostProcessing | Failed | Canceled | NeedLogin
 /// PostProcessing -> Done | Failed | Canceled
-/// Transcoding -> Done | Failed | Canceled
-/// Merging -> Done | Failed | Canceled
+/// Transcoding -> Done | Failed | Canceled | Ready(任务结束恢复)
+/// Merging -> Done | Failed | Canceled | Ready(任务结束恢复)
 /// Done/Failed/Canceled -> Probing (重试/重新解析)
 /// Failed -> NeedLogin (登录后转解析)
 /// NeedLogin -> Probing (登录完成自动重新解析)
@@ -487,13 +482,17 @@ pub fn transition(from: Status, to: Status) -> Result<Status, crate::CoreError> 
         | (Status::PostProcessing, Status::Canceled)
         | (Status::Done, Status::Transcoding)
         | (Status::Done, Status::Merging)
+        | (Status::Done, Status::Probing)
         | (Status::Transcoding, Status::Done)
         | (Status::Transcoding, Status::Failed)
         | (Status::Transcoding, Status::Canceled)
+        // 任务结束恢复：转码/合并的参与条目回到"已就绪"（本地/转码产物）
+        | (Status::Transcoding, Status::Ready)
         | (Status::Merging, Status::Done)
         | (Status::Merging, Status::Failed)
         | (Status::Merging, Status::Canceled)
-        | (Status::Done, Status::Probing)
+        // 任务结束恢复：合并的参与条目回到"已就绪"（本地/转码产物）
+        | (Status::Merging, Status::Ready)
         | (Status::Failed, Status::Probing)
         | (Status::Failed, Status::NeedLogin)
         | (Status::Canceled, Status::Probing)
@@ -537,19 +536,6 @@ mod tests {
         assert_eq!(it.kind, ItemKind::LocalFile);
         assert_eq!(it.title, "VID_1.mp4");
         assert_eq!(it.path.as_deref(), Some("D:/Videos/手机录像/VID_1.mp4"));
-    }
-
-    #[test]
-    fn subline_url_uses_site_prefix() {
-        let mut it = MediaItem::from_url("https://x.com/status/123".into());
-        it.site = Some("X/Twitter".into());
-        assert_eq!(it.subline(), "X/Twitter · https://x.com/status/123");
-    }
-
-    #[test]
-    fn subline_path_uses_local_prefix() {
-        let it = MediaItem::from_path("/tmp/a.mp4".into());
-        assert_eq!(it.subline(), "本地文件 · /tmp/a.mp4");
     }
 
     #[test]
@@ -597,19 +583,13 @@ mod tests {
     }
 
     #[test]
-    fn recoverable_statuses() {
-        assert!(Status::NeedLogin.is_recoverable());
-        assert!(Status::Failed.is_recoverable());
-        assert!(!Status::Done.is_recoverable());
-    }
-
-    #[test]
-    fn status_groups_working() {
-        assert_eq!(Status::Downloading.group(), StatusGroup::Working);
-        assert_eq!(Status::Transcoding.group(), StatusGroup::Working);
-        assert_eq!(Status::Merging.group(), StatusGroup::Working);
-        assert_eq!(Status::PostProcessing.group(), StatusGroup::Working);
-        assert_eq!(Status::Ready.group(), StatusGroup::Single(Status::Ready));
+    fn processing_statuses() {
+        assert!(Status::Downloading.is_processing());
+        assert!(Status::PostProcessing.is_processing());
+        assert!(Status::Transcoding.is_processing());
+        assert!(Status::Merging.is_processing());
+        assert!(!Status::Ready.is_processing());
+        assert!(!Status::Probing.is_processing());
     }
 
     #[test]
@@ -684,6 +664,19 @@ mod tests {
     }
 
     #[test]
+    fn transition_restore_to_ready_allowed() {
+        // 任务结束恢复：转码/合并参与条目回到"已就绪"
+        assert_eq!(
+            transition(Status::Transcoding, Status::Ready).unwrap(),
+            Status::Ready
+        );
+        assert_eq!(
+            transition(Status::Merging, Status::Ready).unwrap(),
+            Status::Ready
+        );
+    }
+
+    #[test]
     fn transition_done_to_transcoding_allowed() {
         // TC 语义：下载完成（Done）的产物可直接进入转码
         assert_eq!(
@@ -748,6 +741,50 @@ mod tests {
     }
 
     #[test]
+    fn short_edge_respects_rotation() {
+        // 竖屏源 1080x1920（rotate_tag=90）：短边 1080，而非 1920
+        let mut m = MediaMeta {
+            height: Some(1920),
+            width: Some(1080),
+            rotate_tag: Some(90),
+            ..Default::default()
+        };
+        assert_eq!(m.short_edge(), Some(1080));
+        m.rotate_tag = None;
+        assert_eq!(m.short_edge(), Some(1920));
+        // width 缺失时退回 height
+        m.width = None;
+        m.rotate_tag = Some(90);
+        assert_eq!(m.short_edge(), Some(1920));
+    }
+
+    #[test]
+    fn low_bitrate_renders_kbps() {
+        let m = MediaMeta {
+            vbitrate_kbps: Some(300),
+            ..Default::default()
+        };
+        assert!(m.quality_line().contains("300k"));
+        let m = MediaMeta {
+            vbitrate_kbps: Some(1500),
+            ..Default::default()
+        };
+        assert!(m.quality_line().contains("2Mbps"));
+    }
+
+    #[test]
+    fn codec_label_prefix_match() {
+        let f = DownloadFormat {
+            vcodec: Some("vp09.00.50.08".into()),
+            acodec: Some("mp4a.40.2".into()),
+            ..Default::default()
+        };
+        let label = f.make_label();
+        assert!(label.contains("VP9"));
+        assert!(label.contains("AAC"));
+    }
+
+    #[test]
     fn human_size_formats() {
         assert_eq!(human_size(1024), "1.0KB");
         assert_eq!(human_size(1024 * 1024), "1.0MB");
@@ -760,13 +797,19 @@ mod tests {
     fn meta_serde_roundtrip() {
         let meta = MediaMeta {
             height: Some(1080),
-            formats: vec!["1080P".into(), "720P".into()],
+            width: Some(1920),
+            download_formats: vec![DownloadFormat {
+                format_id: "bv120".into(),
+                label: "1080P".into(),
+                ..Default::default()
+            }],
             ..Default::default()
         };
         let json = serde_json::to_string(&meta).unwrap();
         let back: MediaMeta = serde_json::from_str(&json).unwrap();
         assert_eq!(back.height, Some(1080));
-        assert_eq!(back.formats.len(), 2);
+        assert_eq!(back.width, Some(1920));
+        assert_eq!(back.download_formats.len(), 1);
     }
 
     #[test]

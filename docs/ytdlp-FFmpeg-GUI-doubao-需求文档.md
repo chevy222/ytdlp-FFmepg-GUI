@@ -26,11 +26,11 @@
 | UL-05 | 勾选后出现批量操作栏：已选 N 项 · 顺/逆时针旋转（仅图标）· 批量转码 · 合并… · 删除；工具栏右侧垃圾桶清空列表 | `ui/index.html::renderBatch` |
 | UL-06 | 统一状态机（白名单迁移见 §9）+ 全局并发队列；进度实时回推；取消立即置标志并终止进程树；失败/已取消/需要登录可"重试"（即重新解析）；可删除 | `model.rs::transition`、`worker.rs::TaskQueue`、`commands.rs` |
 | UL-07 | 列表与队列持久化在 `config/history.json`（含每条目 ≤300 行日志），变更即原子写 | `history.rs`、`state.rs::persist` |
-| UL-08 | 临时文件按任务私有目录隔离（`temp/<任务id>/`、`temp/merge_<uuid>/`），任务结束或取消即清理；底部提供"清理临时文件" | `paths.rs::task_temp_dir`、`commands.rs::clear_temp` |
+| UL-08 | 临时文件按任务私有目录隔离（`temp/<任务id>/`、`temp/merge_<uuid>/`），任务结束或取消即清理；底部"清理临时文件"只清历史残留（跳过运行中任务的私有目录与 `temp/tool_dl/`，不影响进行中的任务） | `paths.rs::task_temp_dir`、`commands.rs::clear_temp` |
 | UL-09 | CLI 入口 + 单实例参数转发（见 §10） | `cli.rs`、`src-tauri/src/lib.rs` |
-| UL-10 | 启动恢复：非终态且非"已就绪"的条目一律标记失败（"应用重启，任务中断"），可重试 | `src-tauri/src/lib.rs::setup` |
+| UL-10 | 启动恢复：非终态且非"已就绪"/"需要登录"的条目一律标记失败（"应用重启，任务中断"），可重试；"需要登录"跨重启保持原状（未登录事实不因重启改变） | `src-tauri/src/lib.rs::setup` |
 | UL-11 | 封面缩略图：URL 取远程缩略图（系统 `curl` 下载），本地文件/下载产物用 ffmpeg 抽帧（`-ss 0.5`，宽 ≤360），统一落在 `config/cache/thumbs/<条目id>.jpg` | `thumbs.rs` |
-| UL-12 | 手动旋转：缩略图上的顺/逆时针箭头 → 角度 0/90/180/270 随条目保存（`rot_angle`），转码时生效；角度 ≠ 0 时缩略图右上角显示角标 | `commands.rs::rot_item`、`model.rs::RotAngle` |
+| UL-12 | 手动旋转：缩略图上的顺/逆时针箭头 → 角度 0/90/180/270 随条目保存（`rot_angle`，设置即落盘，重启不丢），转码时生效；角度 ≠ 0 时缩略图右上角显示角标 | `commands.rs::rot_item`、`model.rs::RotAngle` |
 | UL-13 | 每条目独立日志（最近 300 行），弹窗可查看/复制/仅清空视图 | `model.rs::push_log`、`ui/index.html::openLog` |
 
 ## 2. 元数据解析（MD）
@@ -52,12 +52,12 @@
 | DL-02 | 解析完成后画质列内联"格式选择 (N)"，弹窗列出解析结果（可读标签 + format_id），选定后按该格式下载：`<fid>+ba/b`，仅音频为 `<fid>/bestaudio/best` | `ui/index.html::openFmt`、`download.rs::build_args` |
 | DL-03 | 默认格式四级回落 `bv*[height<=H]+ba / b[height<=H] / bv*+ba / b`（H = `download.max_h`）+ 排序串 `vcodec:h264,lang,quality,res,fps,acodec:aac,size,proto,ext`；`--merge-output-format mp4`；`--no-overwrites` 不覆盖同名文件 | `download.rs::default_format` / `SORT_SPEC` / `build_args` |
 | DL-04 | 下载后自动后处理，仅在需要时执行：① 高度超 `download.max_h` → `scale=-2:'min(ih,max_h)'` + libx265 CRF23 重编码；② 开启音量归一化且 `max_volume ∈ (-100,-0.5)dB` → 增益至峰值 0dBFS（`general.max_gain_db` 封顶）并重编码 AAC。有封面流时主视频走 filter_complex、封面按索引 `copy`；产物经 ffprobe 校验后**单次 rename 原子替换**，任一步失败保留原文件并记日志 | `download.rs::post_process` / `verify_video` |
-| DL-05 | "需要登录"条目点"去登录"打开 WebView2 登录窗（窗口 label `ytdlp-login`）：注入顶部中心"登录完成"按钮 + 提示条 + 右上角关闭按钮，`setInterval(800ms)` 自检重建（SPA 路由变化不触发页面加载事件）；点击后跳转 `http://127.0.0.1/ytdlp-login-done?host=&cookies=` 触发保存；Windows 优先经 COM CookieManager 抓取（含 HttpOnly），失败回退 URL 携带的 `document.cookie`；保存后关窗并广播 `login:done` | `login.rs`、`login_win.rs` |
+| DL-05 | "需要登录"条目点"去登录"打开 WebView2 登录窗（窗口 label `ytdlp-login`）：注入顶部中心"登录完成"按钮 + 提示条 + 右上角关闭按钮，`setInterval(800ms)` 自检重建（SPA 路由变化不触发页面加载事件）；点击后跳转 `http://127.0.0.1/ytdlp-login-done?host=&cookies=` 触发保存；Windows 优先经 COM CookieManager 抓取（含 HttpOnly），失败回退 URL 携带的 `document.cookie`；保存后关窗并广播 `login:done`（前端收到后对全部"需要登录"条目自动重试，即重新解析） | `login.rs`、`login_win.rs` |
 | DL-06 | Cookie 存 `config/cookies/<host>.json`（name/value/domain/path/expires/http_only/secure/same_site）；匹配顺序：精确 host → 父域 → 补 `www.` → X↔twitter 互退；导出 Netscape 文件到**任务私有目录**（`temp/<任务id>/cookies-<host>.txt`）供 `--cookies` 使用，任务结束随目录删除；单条 value >4096 字节不导出 | `cookies.rs`、`commands.rs::resolve_cookies` |
 | DL-07 | 站点分流白名单：只有 `network.site_proxy` 中显式为 true 的站点走 `network.proxy_url`，其余一律直连；代理地址为空则全部直连 | `config.rs::NetworkConfig::resolve_proxy` |
 | DL-08 | 仅音频：选中仅音频格式后加 `-x --audio-format mp3 --audio-quality 0`（格式固定 mp3） | `download.rs::build_args` |
-| DL-09 | 播放列表（`download.playlist` 开）解析合集后用 `-J --flat-playlist` 展开每集 URL，逐条平铺进列表并各自解析 | `probe.rs::list_playlist_entries`、`commands.rs::expand_playlist` |
-| DL-10 | 文件名模板：纯标题 `%(title)s.%(ext)s` / 标题+ID / UP主-标题 / 日期-标题；播放列表模式 `%(playlist_title)s/%(playlist_index)s - %(title)s.%(ext)s` | `download.rs::output_template` |
+| DL-09 | 播放列表（`download.playlist` 开）解析合集后用 `-J --flat-playlist` 展开每集 URL，逐条平铺进列表；每集在单个后台线程中**顺序**解析（大合集避免瞬间并发起等量 yt-dlp 子进程），每集就绪即回显 | `probe.rs::list_playlist_entries`、`commands.rs::expand_playlist` |
+| DL-10 | 文件名模板：纯标题 `%(title)s.%(ext)s` / 标题+ID / UP主-标题 / 日期-标题（日期按本地时区）；播放列表模式 `%(playlist_title)s/%(playlist_index)s - %(title)s.%(ext)s` | `download.rs::output_template` |
 | DL-11 | 并发分片 `-N <fragments>`（默认 4）、`--retries <retries>`（默认 3）、`--retry-sleep 3` | `download.rs::build_args` |
 | DL-12 | 时间范围下载：条目 `sections` 设置后传 `--download-sections *<start>-<end>`（HH:MM:SS，前端校验格式） | `commands.rs::set_sections`、`download.rs::build_args` |
 | DL-13 | 产物定位：解析 yt-dlp 输出中的 `[Merger] Merging formats into "<path>"`、`[download] Destination:`、`[download] <file> has already been downloaded` 三类行，"存在即本次产物"；一条都没解析到时才扫描输出目录，且只取**本次启动后新增的最新一个**视频文件；仍为空则判失败（不触碰目录内既有文件）。若本次只有"已下载过"的既有文件（`preexisting`），跳过后处理 | `download.rs::parse_merger_path` / `parse_already_downloaded_path` / `newest_media_since` / `run_download` |
@@ -68,7 +68,7 @@
 | 编号 | 行为 | 实现位置 |
 | --- | --- | --- |
 | TC-01 | 添加本地文件/目录：文件多选（带扩展名过滤）、目录递归扫描；拖放路径按递归扫描；添加后立即解析 | `commands.rs::add_local` / `scan_dir`、`ui/index.html` |
-| TC-02 | 批量转码逐条目独立执行，各自记日志与失败原因；条目转码失败后自动重新解析以刷新源元数据 | `commands.rs::start_transcode` / `finish_transcode` |
+| TC-02 | 批量转码逐条目独立执行，各自记日志与失败原因；失败条目可"重试"（重新解析后再转码） | `commands.rs::start_transcode` / `finish_transcode` |
 | TC-03 | 编码器：`auto`（`ffmpeg -encoders` 探测到 `hevc_qsv` 用 QSV，否则 libx265）/ `libx265` / `hevc_nvenc` / `hevc_amf`。参数：libx265 `-crf 23 -preset medium`；NVENC `-rc vbr -cq 23 -preset p5`；AMF `-qp_i 23 -qp_p 23 -quality balanced`；QSV `-global_quality 23`（`low_power` 开时加 `-low_power 1`） | `transcode.rs::pick_encoder` / `detect_hw_encoders` |
 | TC-04 | 手动旋转：按条目 `rot_angle` 生成 `transpose=1`（90°）/ `transpose=1,transpose=1`（180°）/ `transpose=2`（270°）；不做自动纠正 | `transcode.rs::build_vf` |
 | TC-05 | 分辨率封顶：`scale='min(iw,MAXW)':'min(ih,MAXH)':force_original_aspect_ratio=decrease:force_divisible_by=2` —— 保持比例、不放大、**偶数对齐** | `transcode.rs::build_vf` |
@@ -92,7 +92,7 @@
 | MG-03 | 异参统一：逐段转码（目标高度取各段最大 height，滤波 `scale=-2:<h>:force_original_aspect_ratio=decrease`，音频 aac 48kHz 双声道）后再 concat 直拼 | `merge.rs::transcode_segment` |
 | MG-04 | 输出容器 MP4（默认）/ MKV；编码器跟随面板选择（`auto` 落到 libx265；libx265 输出 MP4 时加 `hvc1`）；MP4 加 `+faststart` | `merge.rs::encoder_args` / `concat_copy` |
 | MG-05 | 合并后可选音量归一化：探测产物 `max_volume` → 视频 `copy`、音频 aac 增益至峰值 0dBFS（`general.max_gain_db` 封顶）；中间文件写在任务临时目录，成功后单次 rename 原子替换 | `merge.rs::post_normalize` |
-| MG-06 | 输出文件名默认 `合并_<YYYYMMDD>`，可编辑；碰撞策略同 TC-11；产物作为新条目（`MergeOut`）回到列表 | `commands.rs::default_merge_name` / `finish_merge`、`merge.rs::output_path` |
+| MG-06 | 输出文件名默认 `合并_<YYYYMMDD>`（本地时区日期），可编辑；碰撞策略同 TC-11；产物作为新条目（`MergeOut`）回到列表 | `commands.rs::default_merge_name` / `finish_merge`、`merge.rs::output_path` |
 | MG-07 | 合并作为**一个作业**提交（锚点条目占一个并发额度），全部参与条目一起被标记"合并中"、结束后一起恢复原状态；取消标志共享，任一条目点"取消"即可取消整次合并 | `commands.rs::start_merge` / `run_merge_task` / `finish_merge` |
 
 ## 6. 设置与配置段
@@ -132,7 +132,7 @@
 MediaItem
   id(uuid) · kind(url_task|local_file|transcode_out|merge_out) · title · path · url · site · host
   status · percent · error · speed · eta · file · log(VecDeque ≤300 行) · thumb
-  rot_angle(0/90/180/270) · format_id · audio_only · sections(起止) · persist · updated_at
+  rot_angle(0/90/180/270) · format_id · audio_only · sections(起止) · persist · updated_at(本地时区 `YYYY-MM-DD HH:MM:SS`)
   meta: MediaMeta
 
 MediaMeta
@@ -174,7 +174,7 @@ NeedLogin      -> Probing
 - 额度 = `general.concurrency`（默认 3），下载/转码/合并**共享**；保存设置即生效。
 - 解析不占额度；后处理在下载任务线程内串行执行。
 - 取消：排队中直接出队并置 `Canceled`；运行中置取消标志 → 任务线程终止子进程树（Windows `taskkill /PID <pid> /T /F`）→ 清理本任务临时目录与残留 → 置 `Canceled`。
-- 任务收尾统一顺序：写状态 → 释放额度 → 启动下一个等待任务 → 持久化。
+- 任务收尾统一顺序：写状态 → 清理取消标志（防注册表条目泄漏）→ 释放额度 → 启动下一个等待任务 → 持久化。
 - 转码/合并结束后原条目恢复为"已就绪"（本地文件、转码产物）或"已完成"（下载产物、合并产物）。
 
 ## 10. CLI 与单实例
@@ -185,7 +185,7 @@ ytdlp-FFmpeg-GUI --url <URL> [--url <URL> ...] [--cookies <path>] [--dir <path>]
 ```
 - `--url`（可重复，等价 `-u`）；其余裸位置参数按 URL 处理；`--help`/`-h`/`--version`/`-v` 被忽略。
 - 覆盖项只对本次调用生效：`--dir` 作为本次输出目录、`--cookies` 作为本次 Cookie 文件、`--yt-dlp-path`/`--deno-path` 进入工具解析器；均不写 config.json。
-- 单实例：第二个实例把 argv 转发给已运行实例（`tauri-plugin-single-instance`），主实例把 URL 投入解析队列。
+- 单实例：第二个实例把 argv 转发给已运行实例（`tauri-plugin-single-instance`），主实例**无条件**应用覆盖项（`--dir`/`--cookies`/工具路径，即使本次不带 URL），并把 URL 投入解析队列。
 
 ## 11. 关键实现约束（改代码前必读）
 
@@ -204,6 +204,8 @@ ytdlp-FFmpeg-GUI --url <URL> [--url <URL> ...] [--cookies <path>] [--dir <path>]
 11. **登录窗注入脚本要保活重建**：SPA 路由变化不触发页面加载事件，靠 `setInterval(800ms)` 自检重建按钮与提示条。
 12. **JSON 原子写用单次 rename**，不要"先删后改名"（中间失败会丢整份文件）。
 13. **已知限制**：未禁用 ffmpeg 的 autorotate。源文件自带 `rotate` 标记时，ffmpeg 会先按显示矩阵自动旋转，此时再叠加用户手动旋转会导致双重旋转。`MediaMeta.rotate_tag` 已记录源标记，后续可据此决定是否加 `-noautorotate` 并用它初始化 `rot_angle`。
+14. **日期/时间戳一律走 `timefmt`**（epoch 秒 + 本地时区偏移；Windows 读注册表 `ActiveTimeBias`，含夏令时；其余平台按 UTC）。std 不提供本地时区，直接按 UTC 手算日期在东八区 0:00–8:00 会差一天（合并默认名、`日期-标题` 模板、`updated_at` 均受影响）。
+15. **锁纪律**：`history` 等全局 `std::sync::Mutex` 不可重入——持锁期间不做文件 IO、不 `emit` 事件、不调用会再次加锁的函数（`log_item`/`update_item` 先出锁再调用），否则当场死锁冻结 UI。
 
 ## 12. 未实现项（不在当前代码中）
 
@@ -239,6 +241,7 @@ ytdlp-FFmpeg-GUI --url <URL> [--url <URL> ...] [--cookies <path>] [--dir <path>]
 | 外部进程、工具定位、进程树终止 | `crates/core/src/exec.rs` |
 | 并发队列 | `crates/core/src/worker.rs` |
 | CLI 解析 | `crates/core/src/cli.rs` |
+| 本地时间格式化（时区偏移/日期戳/时间戳） | `crates/core/src/timefmt.rs` |
 | 缩略图 | `crates/core/src/thumbs.rs` |
 | 工具链托管下载 | `crates/core/src/tool_download.rs` |
 | 命令桥接与后台任务 | `src-tauri/src/commands.rs` |

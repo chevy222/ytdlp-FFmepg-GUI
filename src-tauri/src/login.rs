@@ -115,7 +115,12 @@ fn handle_login_done(win: &tauri::WebviewWindow, host: &str, url: &str) {
                     cookies.push(ytdlp_core::cookies::CookieEntry {
                         name: c.0,
                         value: c.1,
-                        domain: format!(".{}", host.trim_start_matches("www.")),
+                        // strip_prefix 只剥一次：trim_start_matches 会把 www.www- 这类
+                        // 前缀反复剥掉，得出错误域
+                        domain: format!(
+                            ".{}",
+                            host.strip_prefix("www.").unwrap_or(host)
+                        ),
                         path: "/".into(),
                         expires: None,
                         http_only: false,
@@ -131,13 +136,13 @@ fn handle_login_done(win: &tauri::WebviewWindow, host: &str, url: &str) {
     }
     finish_login(&app, host);
 }
-fn finish_login(app: &AppHandle, _host: &str) {
+fn finish_login(app: &AppHandle, host: &str) {
     // 关闭登录窗
     if let Some(win) = app.get_webview_window("ytdlp-login") {
         let _ = win.close();
     }
     // 通知前端（触发 NeedLogin 条目自动重解析）
-    let _ = app.emit("login:done", serde_json::json!({ "host": _host }));
+    let _ = app.emit("login:done", serde_json::json!({ "host": host }));
 }
 
 /// 解析 `a=b; c=d` 形式 cookie 字符串。

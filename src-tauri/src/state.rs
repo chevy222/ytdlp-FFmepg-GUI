@@ -47,9 +47,19 @@ pub struct AppState {
 impl AppState {
     pub fn new() -> Self {
         let paths = Paths::from_exe();
-        let _ = paths.ensure_dirs();
-        let config = AppConfig::load(&paths.config_file()).unwrap_or_default();
-        let history = History::load(&paths.history_file()).unwrap_or_default();
+        // 目录创建在 lib.rs setup 里做（那里会报告错误）；这里不重复
+        let config = match AppConfig::load(&paths.config_file()) {
+            Ok(c) => c,
+            Err(e) => {
+                // 损坏文件已在 load 内备份为 .corrupt-<ts>.json；回退默认并告警
+                eprintln!("config 加载失败（回退默认设置）：{}", e);
+                AppConfig::default()
+            }
+        };
+        let history = History::load(&paths.history_file()).unwrap_or_else(|e| {
+            eprintln!("history 加载失败（回退空列表）：{}", e);
+            History::default()
+        });
         let concurrency = config.general.concurrency as usize;
         Self {
             paths,

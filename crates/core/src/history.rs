@@ -53,7 +53,9 @@ impl History {
         self.items.iter().find(|i| i.id == id)
     }
 
-    /// 追加或按 id 更新；超过上限裁剪最旧（保留条数限制）。
+    /// 追加或按 id 更新；超过上限时优先裁剪**最旧的终态条目**
+    /// （Done/Failed/Canceled），避免把仍在处理中的活跃任务裁掉
+    /// （任务完成 upsert 会"复活"被裁条目，造成列表闪烁）。
     pub fn upsert(&mut self, item: MediaItem) {
         if let Some(existing) = self.items.iter_mut().find(|i| i.id == item.id) {
             *existing = item;
@@ -61,7 +63,11 @@ impl History {
             self.items.push(item);
         }
         while self.items.len() > self.limit {
-            self.items.remove(0);
+            if let Some(pos) = self.items.iter().position(|i| i.status.is_terminal()) {
+                self.items.remove(pos);
+            } else {
+                self.items.remove(0);
+            }
         }
     }
 
@@ -72,21 +78,26 @@ impl History {
         self.items.len() != before
     }
 
-    /// 清空已完成（UL-06 清空已完成）。
-    pub fn clear_done(&mut self) {
+    /// 清除全部终态条目（Done/Failed/Canceled）。
+    pub fn clear_terminal(&mut self) {
         self.items.retain(|i| !i.status.is_terminal());
     }
 
-    /// 加载；文件缺失返回空历史。
+    /// 加载；文件缺失返回空历史；JSON 损坏备份为 `<原名>.corrupt-<ts>.json`。
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
         }
         let text = std::fs::read_to_string(path)?;
+        // 剥 UTF-8 BOM：与 config 同一防御（记事本编辑后 serde 会误判损坏）
+        let text = text
+            .strip_prefix('\u{feff}')
+            .map(str::to_string)
+            .unwrap_or(text);
         match serde_json::from_str::<History>(&text) {
             Ok(h) => Ok(h),
             Err(e) => {
-                let backup = path.with_extension("json.corrupt");
+                let backup = crate::paths::corrupt_backup_path(path);
                 let _ = std::fs::copy(path, &backup);
                 Err(CoreError::ConfigCorrupt(format!(
                     "history.json 损坏（已备份到 {}）：{}",
@@ -125,15 +136,34 @@ mod tests {
     }
 
     #[test]
-    fn upsert_trims_oldest_over_limit() {
+    fn upsert_trims_oldest_terminal_first() {
         let mut h = History::new(3);
-        for i in 0..5 {
-            h.upsert(item(i));
+        let mut active = item(0);
+        active.status = Status::Downloading;
+        h.upsert(active);
+        // 其余条目须为终态（MediaItem::new 默认 Probing 非终态），
+        // 否则裁剪回退到"删最旧"会把活跃条目删掉
+        for n in 1..=3 {
+            let mut done = item(n);
+            done.status = Status::Done;
+            h.upsert(done);
         }
+        // 超限：裁掉最旧的终态（文件1），保留活跃条目
         assert_eq!(h.len(), 3);
-        assert!(h.get(&h.items[0].id.clone()).is_some());
-        // 最旧的 0/1 被裁剪
-        assert!(h.items.iter().all(|i| i.title != "文件0.mp4"));
+        assert!(h.items.iter().any(|i| i.status == Status::Downloading));
+        assert!(h.items.iter().all(|i| i.title != "文件1.mp4"));
+    }
+
+    #[test]
+    fn upsert_trims_oldest_when_all_active() {
+        let mut h = History::new(2);
+        for i in 0..3 {
+            let mut it = item(i);
+            it.status = Status::Downloading;
+            h.upsert(it);
+        }
+        assert_eq!(h.len(), 2);
+        assert!(h.items.iter().all(|i| i.status == Status::Downloading));
     }
 
     #[test]
@@ -173,7 +203,7 @@ mod tests {
         h.upsert(done);
         h.upsert(failed);
         h.upsert(active);
-        h.clear_done();
+        h.clear_terminal();
         assert_eq!(h.len(), 1);
         assert_eq!(h.items[0].status, Status::Downloading);
     }
@@ -203,6 +233,14 @@ mod tests {
         let p = root.path().join("history.json");
         std::fs::write(&p, "boom").unwrap();
         assert!(History::load(&p).is_err());
-        assert!(root.path().join("history.json.corrupt").exists());
+        // 备份名统一为 <原名>.corrupt-<ts>.json（paths::corrupt_backup_path）
+        let backed = std::fs::read_dir(root.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| {
+                let n = e.file_name().to_string_lossy().into_owned();
+                n.starts_with("history.json.corrupt-") && n.ends_with(".json")
+            });
+        assert!(backed, "损坏历史应备份为 .corrupt-<ts>.json");
     }
 }
