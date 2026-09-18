@@ -38,20 +38,31 @@ pub fn probe_hw_encoders(app: AppHandle) -> CmdResult<serde_json::Value> {
 
 /// 工具链托管下载/更新（依赖页）：下载到 <exe 同级>\tools\，SHA-256 校验后原子激活。
 /// 进度通过 "tool:progress" 事件上报。`force=true` 覆盖已存在的工具。
+/// 下载中前端按钮变"取消"，点击调 cancel_tool_download。
 #[tauri::command]
-pub async fn download_tool(app: AppHandle, tool: String, force: bool) -> CmdResult<String> {
+pub async fn download_tool(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tool: String,
+    force: bool,
+) -> CmdResult<String> {
     let kind = ToolKind::from_config_key(&tool)
         .ok_or_else(|| format!("未知工具键：{tool}"))?;
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_default();
+    // 注册取消标志（前端点"取消"置 true）
+    let cancel_key = format!("tool-dl-{tool}");
+    let flag = state.register_cancel(&cancel_key);
     let dl = ToolDownloader::new(
         exe_dir.join("tools"),
         exe_dir.join("temp").join("tool_dl"),
-    );
+    )
+    .with_cancel(Some(flag));
     let app2 = app.clone();
     let t = tool.clone();
+    let cancel_key2 = cancel_key.clone();
     let path = tauri::async_runtime::spawn_blocking(move || {
         let mut prog = |phase: String, pct: f32| {
             let _ = app2.emit(
@@ -63,7 +74,19 @@ pub async fn download_tool(app: AppHandle, tool: String, force: bool) -> CmdResu
     })
     .await
     .map_err(|e| format!("下载任务异常：{e}"))??;
+    // 清理取消标志
+    state.cancels.lock().unwrap().remove(&cancel_key2);
     Ok(path.to_string_lossy().into_owned())
+}
+
+/// 取消进行中的工具下载（前端点"取消"按钮）。
+#[tauri::command]
+pub fn cancel_tool_download(state: State<'_, AppState>, tool: String) -> CmdResult<()> {
+    let key = format!("tool-dl-{tool}");
+    if let Some(flag) = state.cancel_flag(&key) {
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
 }
 
 /// 依赖自检项（前端显示）。

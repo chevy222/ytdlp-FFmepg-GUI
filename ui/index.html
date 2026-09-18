@@ -860,15 +860,23 @@ function bindSetEvents(){
   page.querySelectorAll('[data-del-cookie]').forEach(b=>b.addEventListener('click',()=>{
     INVOKE('delete_cookie',{host:b.dataset.delCookie}).then(()=>loadCookieList()).catch(err=>toast(err));
   }));
-  page.querySelectorAll('[data-act="tool-dl"],[data-act="tool-up"]').forEach(b=>b.addEventListener('click',()=>{
-    const tool=b.dataset.tool, force=b.dataset.act==='tool-up';
+  page.querySelectorAll('[data-act="tool-dl"],[data-act="tool-up"],[data-act="tool-cancel"]').forEach(b=>b.addEventListener('click',()=>{
+    const tool=b.dataset.tool;
+    // 已是取消按钮 → 取消下载
+    if(b.dataset.act==='tool-cancel'){
+      INVOKE('cancel_tool_download',{tool}).then(()=>toast('已请求取消下载')).catch(err=>toast(err));
+      return;
+    }
+    const force=b.dataset.act==='tool-up';
     const row=b.closest('.toolrow');
-    row.querySelectorAll('.btn').forEach(x=>x.disabled=true);
-    b.textContent='连接中…';
+    row.querySelectorAll('.btn').forEach(x=>{x.disabled=true;});
+    b.disabled=false;
+    b.dataset.act='tool-cancel';
+    b.classList.add('danger');
+    b.textContent='取消';
     INVOKE('download_tool',{tool,force})
       .then(p=>{toast((force?'更新':'下载')+'完成：'+p);renderSetPage();refreshDeps();})
-      .catch(err=>toast(err))
-      .finally(()=>{row.querySelectorAll('.btn').forEach(x=>{x.disabled=false;x.textContent=x.dataset.act==='tool-up'?'更新':'下载';});});
+      .catch(err=>{toast(err);renderSetPage();refreshDeps();});
   }));
   page.querySelectorAll('[data-site]').forEach(b=>b.addEventListener('change',()=>{
     const map=cfgRef().network.site_proxy||{}; map[b.dataset.site]=b.checked; cfgRef().network.site_proxy=map;
@@ -923,8 +931,8 @@ async function init(){
     LISTEN('cookies:changed', ()=>{ if(curPage==='cookie')loadCookieList(); });
     LISTEN('tool:progress', e=>{
       const p=e.payload; if(!p||!p.tool)return;
-      const btn=document.querySelector('.toolrow [data-tool="'+p.tool+'"]');
-      if(btn&&btn.disabled)btn.textContent=p.phase+(p.phase==='下载'||p.phase==='安装'?(' '+Math.round((p.percent||0)*100)+'%'):'');
+      const cancelBtn=document.querySelector('.toolrow [data-tool="'+p.tool+'"][data-act="tool-cancel"]');
+      if(cancelBtn)cancelBtn.textContent='取消 '+Math.round((p.percent||0)*100)+'%';
     });
   }catch(err){ console.error(err); toast('初始化失败：'+err); }
 }

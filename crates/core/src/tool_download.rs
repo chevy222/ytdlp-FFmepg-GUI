@@ -100,6 +100,8 @@ impl ToolKind {
 pub struct ToolDownloader {
     pub tools_dir: PathBuf,
     pub temp_dir: PathBuf,
+    /// 取消标志（下载中点"取消"置 true → kill curl）
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl ToolDownloader {
@@ -108,7 +110,17 @@ impl ToolDownloader {
         Self {
             tools_dir: tools_dir.into(),
             temp_dir: temp_dir.into(),
+            cancel: None,
         }
+    }
+
+    /// 设置取消标志。
+    pub fn with_cancel(
+        mut self,
+        cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    ) -> Self {
+        self.cancel = cancel;
+        self
     }
 
     /// 目标在 tools 目录的最终路径。
@@ -183,9 +195,31 @@ impl ToolDownloader {
         let out_str = raw.to_string_lossy().into_owned();
         let mut cmd = std::process::Command::new("curl");
         cmd.args(["-L", "--fail", "-sS", "-o", &out_str, url]);
-        let output = cmd
-            .output()
+        crate::exec::hide_console(&mut cmd);
+        let mut child = cmd
+            .spawn()
             .map_err(|e| format!("无法调用 curl：{e}"))?;
+        // 轮询等待 + 检查取消标志（点"取消"则 kill）
+        loop {
+            if let Some(flag) = &self.cancel {
+                if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = std::fs::remove_file(&raw);
+                    return Err("已取消".to_string());
+                }
+            }
+            match child
+                .try_wait()
+                .map_err(|e| format!("curl 等待失败：{e}"))?
+            {
+                Some(_) => break,
+                None => std::thread::sleep(std::time::Duration::from_millis(150)),
+            }
+        }
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("curl 读取输出失败：{e}"))?;
         if !output.status.success() {
             let _ = std::fs::remove_file(&raw);
             let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -207,10 +241,10 @@ impl ToolDownloader {
     /// 取 SHA-256 期望值（网络失败/404 返回空，跳过校验）。
     fn fetch_sha(&self, kind: ToolKind) -> Option<String> {
         let url = kind.sha_url()?;
-        let output = std::process::Command::new("curl")
-            .args(["-L", "--fail", "-sS", url])
-            .output()
-            .ok()?;
+        let mut cmd = std::process::Command::new("curl");
+        cmd.args(["-L", "--fail", "-sS", url]);
+        crate::exec::hide_console(&mut cmd);
+        let output = cmd.output().ok()?;
         if !output.status.success() {
             return None;
         }
