@@ -155,6 +155,8 @@ pub struct MediaMeta {
     pub abitrate_kbps: Option<u32>,
     /// 音轨数
     pub audio_tracks: Option<u32>,
+    /// 声道数（首个音频流 channels）
+    pub audio_channels: Option<u32>,
     /// 最大音量（转码增益依据）
     pub audio_volume: AudioVolume,
     /// 文件大小字节
@@ -263,7 +265,9 @@ impl MediaMeta {
         if let Some(b) = self.abitrate_kbps {
             parts.push(format!("{}k", b));
         }
-        if let Some(t) = self.audio_tracks {
+        if let Some(c) = self.audio_channels {
+            parts.push(format!("{}声道", c));
+        } else if let Some(t) = self.audio_tracks {
             parts.push(format!("{}轨", t));
         }
         if let Some(v) = self.audio_volume.max_volume_db {

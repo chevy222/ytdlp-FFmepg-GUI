@@ -427,6 +427,7 @@ pub fn parse_ffprobe_json(text: &str) -> MediaMeta {
                 // 保留首个音频流的信息（后续流仅计数）
                 if meta.acodec.is_none() {
                     meta.acodec = s["codec_name"].as_str().map(str::to_string);
+                    meta.audio_channels = s["channels"].as_u64().map(|c| c as u32);
                     meta.abitrate_kbps = s["bit_rate"]
                         .as_str()
                         .and_then(|b| b.parse::<f64>().ok())
