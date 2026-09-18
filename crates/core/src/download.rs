@@ -343,23 +343,34 @@ pub fn post_process(
         "-i".into(),
         input.to_string_lossy().into_owned(),
         "-map".into(),
-        "0".into(),
+        "0:v:0?".into(),
+        "-map".into(),
+        "0:a?".into(),
     ];
-    // 视频
+    // 封面流（attached pic）单独映射：mp4 容器不支持 hevc 封面，必须原样 copy
+    if meta.has_cover {
+        args.push("-map".into());
+        args.push("0:m:attached_pic?".into());
+    }
+    // 视频（:0 仅主视频，封面流不受 -c:v:0/-vf 影响）
     if need_downscale {
         let target = cfg.max_h;
         args.push("-vf".into());
         args.push(format!("scale=-2:'min(ih,{})'", target));
-        args.push("-c:v".into());
+        args.push("-c:v:0".into());
         args.push("libx265".into());
         args.push("-crf".into());
         args.push("23".into());
         args.push("-preset".into());
         args.push("medium".into());
-        args.push("-tag:v".into());
+        args.push("-tag:v:0".into());
         args.push("hvc1".into());
     } else {
-        args.push("-c:v".into());
+        args.push("-c:v:0".into());
+        args.push("copy".into());
+    }
+    if meta.has_cover {
+        args.push("-c:v:1".into());
         args.push("copy".into());
     }
     // 音频（增益到峰值 0dBFS，MAXGAIN 封顶 24dB，TC-07 语义）
