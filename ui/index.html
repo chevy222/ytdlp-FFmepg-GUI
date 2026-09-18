@@ -161,7 +161,7 @@
   .merge-warn.warn{background:#fffbeb;color:#92400e;border:1px solid #fde68a}
   .merge-right .set-row .k{flex:0 0 92px}
   .log-list{list-style:none;margin:0;padding:8px 16px;flex:1;overflow:auto;font-size:12px;font-family:Consolas,'Courier New',monospace;min-height:200px}
-  .log-list li{padding:6px 2px;border-bottom:1px dashed #eef2f7;color:#475569;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .log-list li{padding:6px 2px;border-bottom:1px dashed #eef2f7;color:#475569;white-space:pre-wrap;word-break:break-all;overflow-wrap:anywhere}
   .log-list li.err{color:#dc2626}
   .fmt-list{list-style:none;margin:0;padding:10px 16px 14px;overflow:auto;flex:1}
   .fmt-list li{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;margin-bottom:6px;cursor:pointer;font-size:12.5px;color:#334155}
@@ -725,7 +725,13 @@ function openLog(id){
   const log=it.log&&it.log.length?it.log:['（暂无日志）'];
   document.getElementById('logList').innerHTML=log.map(l=>{
     const txt=typeof l==='string'?l:String(l);
-    return '<li class="'+(txt.includes('失败')||txt.includes('错误')?'err':'')+'">'+esc(txt)+'</li>';
+    let cls=''; let body=txt;
+    if(txt.includes('失败')||txt.includes('错误')){cls='err';}
+    if(/403|Forbidden/i.test(txt)){
+      body+='\n\n[提示] HTTP 403：站点拒绝了请求。YouTube 请先点"去登录"用内置登录保存 Cookie 后重试；或更换代理节点；或更新 yt-dlp。';
+      cls='err';
+    }
+    return '<li class="'+cls+'">'+esc(body)+'</li>';
   }).join('');
   document.getElementById('logModal').classList.add('show');
 }
