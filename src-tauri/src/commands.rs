@@ -115,7 +115,7 @@ pub async fn download_tool(
     let dl = ToolDownloader::new(tools_dir.clone(), state.paths.temp_dir().join("tool_dl"));
     let ctx = ToolInstallCtx {
         app: &app,
-        state: &*state,
+        state: state.inner(),
         dl: &dl,
         tools_dir: tools_dir.as_path(),
         key: tool.as_str(),
