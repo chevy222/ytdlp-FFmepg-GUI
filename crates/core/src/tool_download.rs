@@ -322,9 +322,11 @@ impl ToolDownloader {
             VersionFeed::GithubLatest(url) => {
                 std::fs::create_dir_all(&self.temp_dir).ok()?;
                 // 文件名带工具名：同时点两个工具的"更新"时互不覆盖（进程 id 是同一个）
-                let head = self
-                    .temp_dir
-                    .join(format!("head-{}-{}.txt", kind.exe_name(), std::process::id()));
+                let head = self.temp_dir.join(format!(
+                    "head-{}-{}.txt",
+                    kind.exe_name(),
+                    std::process::id()
+                ));
                 let mut cmd = std::process::Command::new("curl");
                 cmd.args(["-sIL", "--fail", "-o"])
                     .arg(&head)
@@ -379,8 +381,7 @@ impl ToolDownloader {
         if let Some(dir) = dest.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("创建目标目录失败：{e}"))?;
         }
-        std::fs::create_dir_all(&self.temp_dir)
-            .map_err(|e| format!("创建临时目录失败：{e}"))?;
+        std::fs::create_dir_all(&self.temp_dir).map_err(|e| format!("创建临时目录失败：{e}"))?;
 
         let (raw, verify_zip) = self.download_artifact(kind, on_progress)?;
 
@@ -427,9 +428,12 @@ impl ToolDownloader {
     ) -> Result<(PathBuf, bool), String> {
         let is_zip = kind.zip_entry_suffix().is_some();
         let ext = if is_zip { "zip" } else { "bin" };
-        let raw = self
-            .temp_dir
-            .join(format!("{}-{}.{}", kind.exe_name(), std::process::id(), ext));
+        let raw = self.temp_dir.join(format!(
+            "{}-{}.{}",
+            kind.exe_name(),
+            std::process::id(),
+            ext
+        ));
         let url = kind.url();
         // 先问总大小：拿不到（CDN 不给 content-length）时进度退化为阶段提示，不影响下载
         let total = self.remote_size(url);
@@ -445,9 +449,7 @@ impl ToolDownloader {
         cmd.stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped());
         crate::exec::hide_console(&mut cmd);
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("无法调用 curl：{e}"))?;
+        let mut child = cmd.spawn().map_err(|e| format!("无法调用 curl：{e}"))?;
         // curl -sS 自身不输出进度，这里按已写入的字节数估算百分比上报，
         // 否则整个下载过程前端只能停在 0%（大文件动辄几分钟）。
         on_progress("下载".into(), 0.0);
@@ -516,10 +518,8 @@ impl ToolDownloader {
 
     /// 从 zip 提取目标条目（按 `suffix` 后缀匹配、大小写不敏感）到 temp 目录。
     fn extract_from_zip(&self, zip_path: &Path, suffix: &str) -> Result<PathBuf, String> {
-        let file =
-            std::fs::File::open(zip_path).map_err(|e| format!("打开压缩包失败：{e}"))?;
-        let mut archive =
-            zip::ZipArchive::new(file).map_err(|e| format!("解析压缩包失败：{e}"))?;
+        let file = std::fs::File::open(zip_path).map_err(|e| format!("打开压缩包失败：{e}"))?;
+        let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("解析压缩包失败：{e}"))?;
         // 先收集条目名再挑（顶层目录带版本号，如 ffmpeg-9.0.1-essentials_build/bin/ffmpeg.exe）
         let names: Vec<String> = (0..archive.len())
             .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
@@ -610,7 +610,10 @@ mod tests {
 
     #[test]
     fn config_key_roundtrip() {
-        assert_eq!(ToolKind::from_config_key("yt_dlp_path"), Some(ToolKind::YtDlp));
+        assert_eq!(
+            ToolKind::from_config_key("yt_dlp_path"),
+            Some(ToolKind::YtDlp)
+        );
         assert_eq!(ToolKind::from_config_key("deno_path"), Some(ToolKind::Deno));
         assert_eq!(ToolKind::from_config_key("nope"), None);
     }
@@ -628,7 +631,10 @@ mod tests {
             Some(VersionFeed::Text(FFMPEG_VERSION_FEED))
         );
         assert_eq!(ToolKind::Ffmpeg.zip_entry_suffix(), Some("bin/ffmpeg.exe"));
-        assert_eq!(ToolKind::Ffprobe.zip_entry_suffix(), Some("bin/ffprobe.exe"));
+        assert_eq!(
+            ToolKind::Ffprobe.zip_entry_suffix(),
+            Some("bin/ffprobe.exe")
+        );
         assert_eq!(ToolKind::Deno.zip_entry_suffix(), Some("deno.exe"));
         assert_eq!(ToolKind::YtDlp.exe_name(), "yt-dlp.exe");
     }
@@ -656,7 +662,10 @@ mod tests {
     #[test]
     fn downloader_target_path() {
         let dl = ToolDownloader::new("/x/tools", "/x/temp");
-        assert_eq!(dl.target_path(ToolKind::Deno), PathBuf::from("/x/tools/deno.exe"));
+        assert_eq!(
+            dl.target_path(ToolKind::Deno),
+            PathBuf::from("/x/tools/deno.exe")
+        );
     }
 
     #[test]
@@ -668,7 +677,10 @@ mod tests {
         );
         assert_eq!(last_content_length(head), Some(172693744));
         // 没有该头（分块传输 / HEAD 被拒）→ None，进度退化为阶段提示
-        assert_eq!(last_content_length("HTTP/2 200\r\ntransfer-encoding: chunked\r\n"), None);
+        assert_eq!(
+            last_content_length("HTTP/2 200\r\ntransfer-encoding: chunked\r\n"),
+            None
+        );
     }
 
     #[test]
@@ -720,7 +732,11 @@ mod tests {
         // 远端有新构建 → 需要更新
         assert!(!installed_matches(Some(&rec), &target, Some("def456")));
         // 用户改过设置、目标换到别处 → 记录失效，需要更新
-        assert!(!installed_matches(Some(&rec), Path::new("/y/ffmpeg.exe"), Some("abc123")));
+        assert!(!installed_matches(
+            Some(&rec),
+            Path::new("/y/ffmpeg.exe"),
+            Some("abc123")
+        ));
         // 没有记录 / 拿不到远端指纹 → 一律按"需要更新"处理（宁可多下一次）
         assert!(!installed_matches(None, &target, Some("abc123")));
         assert!(!installed_matches(Some(&rec), &target, None));

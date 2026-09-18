@@ -252,7 +252,10 @@ impl MediaMeta {
     /// 文档 §8 口径"分辨率(4K/2K/xP)"按短边计（§6.2）。
     pub fn short_edge(&self) -> Option<u32> {
         let h = self.height?;
-        let rotated = matches!(self.rotate_tag, Some(90) | Some(-90) | Some(270) | Some(-270));
+        let rotated = matches!(
+            self.rotate_tag,
+            Some(90) | Some(-90) | Some(270) | Some(-270)
+        );
         if rotated {
             Some(self.width.map(|w| w.min(h)).unwrap_or(h))
         } else {

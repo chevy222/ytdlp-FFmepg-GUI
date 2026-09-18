@@ -10,8 +10,8 @@
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::exec::{decode_text, ChildGuard, Tool, ToolResolver};
 use crate::model::{MediaMeta, RotAngle};
@@ -69,14 +69,14 @@ impl TranscodeParams {
             _ => {
                 // auto_inc：名 (1).ext / (2).ext …
                 for i in 1..1000 {
-                    let p = self
-                        .out_dir
-                        .join(format!("{} ({}).{}", base, i, ext));
+                    let p = self.out_dir.join(format!("{} ({}).{}", base, i, ext));
                     if !p.exists() {
                         return Ok(p);
                     }
                 }
-                Err(CoreError::Io(std::io::Error::other("无法生成不冲突的输出名")))
+                Err(CoreError::Io(std::io::Error::other(
+                    "无法生成不冲突的输出名",
+                )))
             }
         }
     }
@@ -240,9 +240,7 @@ fn build_vf(rot: RotAngle, max_w: u32, max_h: u32) -> Option<String> {
             factors.push(format!("{}/max(iw,ih)", max_w));
         }
         let s = format!("min({})", factors.join(","));
-        parts.push(format!(
-            "scale='trunc(iw*{s}/2)*2':'trunc(ih*{s}/2)*2'"
-        ));
+        parts.push(format!("scale='trunc(iw*{s}/2)*2':'trunc(ih*{s}/2)*2'"));
     }
     if parts.is_empty() {
         None
@@ -252,7 +250,11 @@ fn build_vf(rot: RotAngle, max_w: u32, max_h: u32) -> Option<String> {
 }
 
 /// 构造 ffmpeg 参数（TC-03/TC-07/TC-08/TC-09/TC-10）。
-pub fn build_args(resolver: &ToolResolver, params: &TranscodeParams, meta: &MediaMeta) -> Result<Vec<String>> {
+pub fn build_args(
+    resolver: &ToolResolver,
+    params: &TranscodeParams,
+    meta: &MediaMeta,
+) -> Result<Vec<String>> {
     let (encoder, mut enc_args) = pick_encoder(resolver, &params.encoder_mode, params.low_power)?;
     if params.container == "mp4" && encoder == "libx265" {
         // hvc1 标签（Apple 兼容）。必须带 `:v:0`：不带流后缀的 `-tag:v`
@@ -435,7 +437,14 @@ pub fn run_transcode(
     mut on_progress: impl FnMut(f32),
     mut on_log: impl FnMut(String),
 ) -> Result<PathBuf> {
-    match run_transcode_once(resolver, params, meta, cancel, &mut on_progress, &mut on_log) {
+    match run_transcode_once(
+        resolver,
+        params,
+        meta,
+        cancel,
+        &mut on_progress,
+        &mut on_log,
+    ) {
         Err(e)
             if !matches!(e, CoreError::Cancelled)
                 && !matches!(params.encoder_mode.as_str(), "libx265") =>
@@ -461,8 +470,14 @@ fn run_transcode_once(
     let args = build_args(resolver, params, meta)?;
     on_log(format!(
         "转码 {} → {}（{}）",
-        params.input.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
-        out.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+        params
+            .input
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        out.file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default(),
         params.encoder_mode
     ));
     // 实际执行的完整命令（含输出路径，build_args 不含）
@@ -558,19 +573,29 @@ mod tests {
     fn template_pure_title() {
         // 本地条目标题带扩展名 → 输出不带双扩展名
         assert_eq!(apply_filename_template("纯标题", "a/b:c.mp4"), "a_b_c");
-        assert_eq!(apply_filename_template("纯标题", "你好世界.mp4"), "你好世界");
+        assert_eq!(
+            apply_filename_template("纯标题", "你好世界.mp4"),
+            "你好世界"
+        );
         assert_eq!(apply_filename_template("纯标题", "无扩展名"), "无扩展名");
     }
 
     #[test]
     fn template_date_prefix() {
         let s = apply_filename_template("日期-标题", "你好");
-        assert!(s.starts_with("20") && s.contains('-') && s.ends_with("你好"), "{}", s);
+        assert!(
+            s.starts_with("20") && s.contains('-') && s.ends_with("你好"),
+            "{}",
+            s
+        );
     }
 
     #[test]
     fn sanitize_windows_chars() {
-        assert_eq!(sanitize_filename("a<b>:c\"d/e\\f|g?h*i"), "a_b__c_d_e_f_g_h_i");
+        assert_eq!(
+            sanitize_filename("a<b>:c\"d/e\\f|g?h*i"),
+            "a_b__c_d_e_f_g_h_i"
+        );
         assert_eq!(sanitize_filename("  "), "未命名");
         assert_eq!(sanitize_filename("abc."), "abc");
     }
@@ -708,7 +733,11 @@ mod tests {
         assert!(joined.contains("-map [cv]"), "{}", joined);
         assert!(!joined.contains("-map 0:0?"), "{}", joined);
         assert!(joined.contains("-c:v:1 mjpeg"), "{}", joined);
-        assert!(joined.contains("-disposition:v:1 attached_pic"), "{}", joined);
+        assert!(
+            joined.contains("-disposition:v:1 attached_pic"),
+            "{}",
+            joined
+        );
         assert!(!joined.contains("-vf "), "{}", joined);
 
         // 不旋转：封面照旧 copy，保持原质量

@@ -9,17 +9,17 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 use ytdlp_core::config::AppConfig;
-use ytdlp_core::exec::{ToolResolver, ToolSource};
+use ytdlp_core::config::NetworkConfig;
 use ytdlp_core::cookies::CookieStore;
 use ytdlp_core::download::{
     self, cleanup_on_cancel, post_process, probe_output, run_download, DownloadParams,
 };
-use ytdlp_core::model::{ItemKind, MediaItem, Status};
-use ytdlp_core::config::NetworkConfig;
+use ytdlp_core::exec::{ToolResolver, ToolSource};
 use ytdlp_core::merge::{self, MergeParams};
-use ytdlp_core::transcode::{self, TranscodeParams};
-use ytdlp_core::tool_download::{installed_matches, InstalledIndex, ToolDownloader, ToolKind};
+use ytdlp_core::model::{ItemKind, MediaItem, Status};
 use ytdlp_core::probe::{self, ProbeErrorKind};
+use ytdlp_core::tool_download::{installed_matches, InstalledIndex, ToolDownloader, ToolKind};
+use ytdlp_core::transcode::{self, TranscodeParams};
 use ytdlp_core::worker::SubmitOutcome;
 use ytdlp_core::{transition, CoreError};
 
@@ -31,8 +31,8 @@ use crate::state::AppState;
 pub fn probe_hw_encoders(app: AppHandle) -> CmdResult<serde_json::Value> {
     let state = app.state::<AppState>();
     let resolver = state.resolver();
-    let hw = transcode::detect_hw_encoders(&resolver)
-        .map_err(|e| format!("探测编码器失败：{}", e))?;
+    let hw =
+        transcode::detect_hw_encoders(&resolver).map_err(|e| format!("探测编码器失败：{}", e))?;
     Ok(serde_json::json!({ "qsv": hw.qsv, "nvenc": hw.nvenc, "amf": hw.amf }))
 }
 
@@ -181,7 +181,11 @@ async fn run_tool_install(
         .as_deref()
         .map(|v| format!("（{v}）"))
         .unwrap_or_default();
-    let verb = if update { "已更新到" } else { "已安装到" };
+    let verb = if update {
+        "已更新到"
+    } else {
+        "已安装到"
+    };
     Ok(ToolInstallResult {
         updated: true,
         path: done.path.to_string_lossy().into_owned(),
@@ -464,11 +468,7 @@ fn run_probe(app: AppHandle, id: String) {
                         } else {
                             // 直连失败自动带设置里的代理重试一次（YouTube 等站点
                             // 缩略图服务器直连拉不动，主下载却走代理）
-                            ytdlp_core::thumbs::save_remote_thumb(
-                                &u,
-                                &dest,
-                                proxy2.as_deref(),
-                            )
+                            ytdlp_core::thumbs::save_remote_thumb(&u, &dest, Some(proxy2.as_str()))
                         }
                     } else if let Some(p) = local_path {
                         ytdlp_core::thumbs::extract_thumb(
@@ -796,7 +796,10 @@ fn finish_download(
     }
     // 任务结束：只清理本任务私有临时目录与本次导出的 Cookie 临时文件
     // （§3.7/UL-06；旧实现直接删全局 temp/，会连别的并发任务一起删）
-    cleanup_on_cancel(&state.paths.task_temp_dir(id), params.cookies_file.as_deref());
+    cleanup_on_cancel(
+        &state.paths.task_temp_dir(id),
+        params.cookies_file.as_deref(),
+    );
     // 清理取消标志注册表条目（否则随任务数无限累积；也让后续 cancel_item
     // 的 cancel_flag 查询能正确区分"运行中"与"已结束"）
     state.cancels.lock().unwrap().remove(id);
@@ -921,9 +924,7 @@ pub fn start_merge(
     if jobs.len() < 2 {
         return Err("可合并条目不足 2 个".into());
     }
-    let norm = normalize.unwrap_or_else(|| {
-        state.config.lock().unwrap().general.normalize_audio
-    });
+    let norm = normalize.unwrap_or_else(|| state.config.lock().unwrap().general.normalize_audio);
     let job = MergeJob {
         ids: jobs,
         filename: filename.unwrap_or_else(default_merge_name),
@@ -978,12 +979,7 @@ fn today_stamp() -> String {
 fn run_merge_task(app: AppHandle, id: String) {
     let state = app.state::<AppState>();
     let cancel = state.register_cancel(&id);
-    let job = state
-        .merge_jobs
-        .lock()
-        .unwrap()
-        .get(&id)
-        .cloned();
+    let job = state.merge_jobs.lock().unwrap().get(&id).cloned();
     let Some(job) = job else {
         release_slot(&app, &id);
         return;
@@ -1148,11 +1144,9 @@ pub fn set_sections(app: AppHandle, id: String, start: String, end: String) -> C
         if parts.len() != 3 {
             return false;
         }
-        parts.iter().all(|p| {
-            !p.is_empty()
-                && p.chars().all(|c| c.is_ascii_digit())
-                && p.len() <= 2
-        })
+        parts
+            .iter()
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) && p.len() <= 2)
     };
     if !valid(&start) || !valid(&end) {
         return Err("时间格式应为 HH:MM:SS（如 00:01:00）".into());
@@ -1255,9 +1249,7 @@ fn expand_playlist(
     if url.is_empty() {
         return;
     }
-    match probe::list_playlist_entries(resolver, &url, cookies, network, |l| {
-        log_item(app, id, l)
-    }) {
+    match probe::list_playlist_entries(resolver, &url, cookies, network, |l| log_item(app, id, l)) {
         Ok(entries) => {
             let n = entries.len();
             log_item(app, id, format!("播放列表展开：{n} 集"));
@@ -1324,8 +1316,7 @@ fn run_transcode_task(app: AppHandle, id: String) {
         // 否则标题经 sanitize 后 "https___www.youtube.com_watch_v=xxx.mp4" 就是输出名
         let title = {
             let t = item.title.trim();
-            let is_url =
-                t.starts_with("http://") || t.starts_with("https://") || t.contains("://");
+            let is_url = t.starts_with("http://") || t.starts_with("https://") || t.contains("://");
             if t.is_empty() || is_url {
                 std::path::Path::new(&path)
                     .file_stem()
@@ -1373,11 +1364,7 @@ fn run_transcode_task(app: AppHandle, id: String) {
 }
 
 /// 转码收尾：原条目恢复、产物作为新条目回列表、释放队列 slot。
-fn finish_transcode(
-    app: &AppHandle,
-    id: &str,
-    result: Result<std::path::PathBuf, CoreError>,
-) {
+fn finish_transcode(app: &AppHandle, id: &str, result: Result<std::path::PathBuf, CoreError>) {
     let state = app.state::<AppState>();
     let (orig_status, final_status) = match &result {
         Ok(out) => {
@@ -1431,7 +1418,9 @@ fn finish_transcode(
 fn restore_status(app: &AppHandle, id: &str) -> Status {
     let state = app.state::<AppState>();
     let hist = state.history.lock().unwrap();
-    let Some(item) = hist.get(id) else { return Status::Ready };
+    let Some(item) = hist.get(id) else {
+        return Status::Ready;
+    };
     match item.kind {
         ItemKind::LocalFile | ItemKind::TranscodeOut => Status::Ready,
         _ => Status::Done,
@@ -1742,13 +1731,7 @@ pub fn clear_temp(app: AppHandle) -> CmdResult<()> {
     if dir.is_dir() {
         // 跳过运行中任务的私有目录（temp/<任务id>/ 里是正在使用的 Cookie 导出等）
         // 与工具下载的 temp/tool_dl；只清历史残留，避免把进行中的任务搞坏
-        let active: Vec<String> = state
-            .cancels
-            .lock()
-            .unwrap()
-            .keys()
-            .cloned()
-            .collect();
+        let active: Vec<String> = state.cancels.lock().unwrap().keys().cloned().collect();
         let tool_dl_busy = active.iter().any(|k| k.starts_with("tool-dl-"));
         for e in std::fs::read_dir(&dir).map_err(err_string)? {
             let e = e.map_err(err_string)?;

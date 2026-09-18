@@ -43,7 +43,8 @@ pub fn parse_cli_args(args: &[String]) -> CliArgs {
             "--dir" => out.dir = it.next().filter(|v| !v.is_empty()).cloned(),
             "--yt-dlp-path" => out.yt_dlp_path = it.next().filter(|v| !v.is_empty()).cloned(),
             "--deno-path" => out.deno_path = it.next().filter(|v| !v.is_empty()).cloned(),
-            "--help" | "-h" | "--version" | "-v" => { /* 参数保留在 urls 外的语义：忽略 */ }
+            "--help" | "-h" | "--version" | "-v" => { /* 参数保留在 urls 外的语义：忽略 */
+            }
             other => {
                 if !other.is_empty() && !other.starts_with('-') {
                     out.urls.push(other.to_string());
@@ -84,11 +85,16 @@ mod tests {
     #[test]
     fn parse_all_overrides() {
         let c = parse_cli_args(&a(&[
-            "--url", "https://a.com/x",
-            "--dir", "D:\\out",
-            "--cookies", "C:\\c.txt",
-            "--yt-dlp-path", "C:\\tools\\yt-dlp.exe",
-            "--deno-path", "C:\\tools\\deno.exe",
+            "--url",
+            "https://a.com/x",
+            "--dir",
+            "D:\\out",
+            "--cookies",
+            "C:\\c.txt",
+            "--yt-dlp-path",
+            "C:\\tools\\yt-dlp.exe",
+            "--deno-path",
+            "C:\\tools\\deno.exe",
         ]));
         assert_eq!(c.dir.as_deref(), Some("D:\\out"));
         assert_eq!(c.cookies.as_deref(), Some("C:\\c.txt"));

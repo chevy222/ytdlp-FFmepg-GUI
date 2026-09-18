@@ -184,7 +184,10 @@ fn site_matches(site: &str, host: &str) -> bool {
 /// serde_json 对 BOM 报"expected value"会被误判为损坏）。
 fn read_text_stripping_bom(path: &Path) -> Result<String> {
     let text = std::fs::read_to_string(path)?;
-    Ok(text.strip_prefix('\u{feff}').map(str::to_string).unwrap_or(text))
+    Ok(text
+        .strip_prefix('\u{feff}')
+        .map(str::to_string)
+        .unwrap_or(text))
 }
 
 /// 根配置（§7.2）。
@@ -286,7 +289,10 @@ mod tests {
             proxy_url: "socks5://127.0.0.1:10808".into(),
             ..Default::default()
         };
-        assert_eq!(n.resolve_proxy("https://www.bilibili.com/video/BV1xx"), None);
+        assert_eq!(
+            n.resolve_proxy("https://www.bilibili.com/video/BV1xx"),
+            None
+        );
         assert_eq!(n.resolve_proxy("https://www.youtube.com/watch?v=abc"), None);
         // 代理地址为空：全部直连
         assert_eq!(
@@ -302,7 +308,10 @@ mod tests {
             ..Default::default()
         };
         n.site_proxy.insert("bilibili.com".into(), false); // 勾选=走代理，此处为直连
-        assert_eq!(n.resolve_proxy("https://www.bilibili.com/video/BV1xx"), None);
+        assert_eq!(
+            n.resolve_proxy("https://www.bilibili.com/video/BV1xx"),
+            None
+        );
         n.site_proxy.insert("youtube.com".into(), true);
         assert_eq!(
             n.resolve_proxy("https://www.youtube.com/watch?v=abc"),

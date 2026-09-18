@@ -264,9 +264,7 @@ fn kill_tree_of(child: &mut Child) {
         // taskkill 需先不 kill 掉主进程句柄，直接用 PID 命令
         let mut tk = Command::new("taskkill");
         hide_console(&mut tk);
-        let _ = tk
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .status();
+        let _ = tk.args(["/PID", &pid.to_string(), "/T", "/F"]).status();
     }
     #[cfg(not(windows))]
     {
@@ -387,7 +385,8 @@ pub fn display_command(program: &str, args: &[String]) -> String {
 
 /// Windows 下隐藏子进程控制台窗口（CREATE_NO_WINDOW），避免 GUI 程序
 /// 调用 yt-dlp/ffmpeg 等控制台工具时黑窗口闪烁。
-pub fn hide_console(cmd: &mut std::process::Command) {    #[cfg(windows)]
+pub fn hide_console(cmd: &mut std::process::Command) {
+    #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -574,7 +573,10 @@ mod tests {
         let ffprobe_line = "ffprobe version 9.0 Copyright (c) 2000-2026 the FFmpeg developers";
         assert_eq!(parse_version_line(Tool::Ffprobe, ffprobe_line), "9.0");
         // deno 的首行是 "<名字> <版本> (构建信息)"
-        assert_eq!(parse_version_line(Tool::Deno, "deno 2.1.4 (stable)"), "2.1.4");
+        assert_eq!(
+            parse_version_line(Tool::Deno, "deno 2.1.4 (stable)"),
+            "2.1.4"
+        );
         // gyan.dev 构建：版本号带构建后缀，取首个 '-' 前的版本段（与 release-version feed 同口径）
         assert_eq!(
             parse_version_line(
@@ -589,7 +591,10 @@ mod tests {
             "N-121772-g8f5c9a1e2a"
         );
         // 取不到版本段时原样返回首行（不返回空串）
-        assert_eq!(parse_version_line(Tool::Ffmpeg, "ffmpeg version"), "ffmpeg version");
+        assert_eq!(
+            parse_version_line(Tool::Ffmpeg, "ffmpeg version"),
+            "ffmpeg version"
+        );
     }
 
     #[test]

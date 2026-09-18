@@ -155,10 +155,7 @@ fn handle_login_done(win: &tauri::WebviewWindow, host: &str, url: &str) {
                         value: c.1,
                         // strip_prefix 只剥一次：trim_start_matches 会把 www.www- 这类
                         // 前缀反复剥掉，得出错误域
-                        domain: format!(
-                            ".{}",
-                            host.strip_prefix("www.").unwrap_or(host)
-                        ),
+                        domain: format!(".{}", host.strip_prefix("www.").unwrap_or(host)),
                         path: "/".into(),
                         expires: None,
                         http_only: false,

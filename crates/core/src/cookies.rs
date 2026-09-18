@@ -233,7 +233,10 @@ mod tests {
         assert_eq!(c[0], "www.bilibili.com");
         assert!(c.contains(&"bilibili.com".to_string()));
         // 去重：不应重复出现 www.bilibili.com
-        assert_eq!(c.len(), c.iter().collect::<std::collections::HashSet<_>>().len());
+        assert_eq!(
+            c.len(),
+            c.iter().collect::<std::collections::HashSet<_>>().len()
+        );
     }
 
     #[test]
@@ -269,10 +272,7 @@ mod tests {
             .unwrap();
         // host-only cookie（无前导点）应输出 FALSE
         store
-            .save_host(
-                "www.youtube.com",
-                vec![ck("VISITOR", "v2", "youtube.com")],
-            )
+            .save_host("www.youtube.com", vec![ck("VISITOR", "v2", "youtube.com")])
             .unwrap();
         let dest = root.path().join("netscape.txt");
         let out = store.export_netscape("www.youtube.com", &dest).unwrap();

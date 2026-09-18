@@ -31,9 +31,7 @@ fn fetch_to(url: &str, dest: &Path, proxy: Option<&str>) -> Result<(), String> {
     // GUI 程序启动控制台子进程会弹出一个黑窗（一闪而过）；这里与其它调用点
     // 保持一致，显式隐藏控制台。
     crate::exec::hide_console(&mut cmd);
-    let output = cmd
-        .output()
-        .map_err(|e| format!("无法调用 curl：{e}"))?;
+    let output = cmd.output().map_err(|e| format!("无法调用 curl：{e}"))?;
     if !output.status.success() || !tmp.is_file() {
         let _ = std::fs::remove_file(&tmp);
         return Err("缩略图下载失败".into());
@@ -68,14 +66,15 @@ pub fn extract_thumb(
         .chain(std::iter::once(dest.to_string_lossy().into_owned()))
         .collect();
     on_log(crate::exec::display_command("ffmpeg", &args));
-    let mut cmd = resolver
-        .command(Tool::Ffmpeg)
-        .map_err(|e| e.to_string())?;
+    let mut cmd = resolver.command(Tool::Ffmpeg).map_err(|e| e.to_string())?;
     cmd.args(&args);
     let child = ChildGuard::spawn(&mut cmd).map_err(|e| e.to_string())?;
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
     if !out.status.success() || !dest.is_file() {
-        return Err(format!("抽帧失败：{}", crate::exec::decode_text(&out.stderr)));
+        return Err(format!(
+            "抽帧失败：{}",
+            crate::exec::decode_text(&out.stderr)
+        ));
     }
     Ok(())
 }
@@ -124,7 +123,12 @@ mod tests {
         assert_eq!(
             crate::exec::display_command(
                 "ffmpeg",
-                &["-i".into(), "in 1.mp4".into(), "-y".into(), "out.mp4".into()]
+                &[
+                    "-i".into(),
+                    "in 1.mp4".into(),
+                    "-y".into(),
+                    "out.mp4".into()
+                ]
             ),
             "ffmpeg -i \"in 1.mp4\" -y out.mp4"
         );

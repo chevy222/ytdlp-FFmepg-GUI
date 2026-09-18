@@ -9,8 +9,8 @@
 //! 输出：MP4（默认）/MKV，`+faststart`；任务私有临时目录，结束清理（稳定性需求）。
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::exec::{ChildGuard, Tool, ToolResolver};
 use crate::model::MediaMeta;
@@ -92,9 +92,7 @@ pub fn output_path(params: &MergeParams) -> Result<PathBuf> {
         )))),
         _ => {
             for i in 1..1000 {
-                let p = params
-                    .out_dir
-                    .join(format!("{} ({}).{}", base, i, ext));
+                let p = params.out_dir.join(format!("{} ({}).{}", base, i, ext));
                 if !p.exists() {
                     return Ok(p);
                 }
@@ -311,7 +309,9 @@ pub fn run_merge(
     mut on_log: impl FnMut(String),
 ) -> Result<PathBuf> {
     if params.inputs.len() < 2 {
-        return Err(CoreError::Io(std::io::Error::other("合并至少需要 2 个输入")));
+        return Err(CoreError::Io(std::io::Error::other(
+            "合并至少需要 2 个输入",
+        )));
     }
     let out = output_path(params)?;
 
@@ -319,7 +319,7 @@ pub fn run_merge(
     let mut metas = Vec::with_capacity(params.inputs.len());
     on_log("探测输入参数…".into());
     for p in &params.inputs {
-        let m = crate::download::probe_output(resolver, p, |l| on_log(l))?;
+        let m = crate::download::probe_output(resolver, p, &mut on_log)?;
         metas.push(m);
     }
     let total = total_duration(&metas);
@@ -357,11 +357,7 @@ pub fn run_merge(
             )?;
         } else {
             // 模式 B：逐段统一转码 + concat 直拼
-            let target_h = metas
-                .iter()
-                .filter_map(|m| m.height)
-                .max()
-                .unwrap_or(1080);
+            let target_h = metas.iter().filter_map(|m| m.height).max().unwrap_or(1080);
             let segs: Vec<PathBuf> = params
                 .inputs
                 .iter()
@@ -471,7 +467,7 @@ fn post_normalize(
     cancel: &Arc<AtomicBool>,
     on_log: &mut dyn FnMut(String),
 ) -> Result<PathBuf> {
-    let meta = crate::download::probe_output(resolver, input, |l| on_log(l))?;
+    let meta = crate::download::probe_output(resolver, input, &mut *on_log)?;
     let Some(max_v) = meta.audio_volume.max_volume_db else {
         return Ok(input.to_path_buf());
     };
@@ -484,11 +480,7 @@ fn post_normalize(
     }
     let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("mp4");
     std::fs::create_dir_all(temp_dir)?;
-    let tmp = temp_dir.join(format!(
-        "norm_{}.{}",
-        uuid::Uuid::new_v4(),
-        ext
-    ));
+    let tmp = temp_dir.join(format!("norm_{}.{}", uuid::Uuid::new_v4(), ext));
     let mut args: Vec<String> = vec![
         "-hide_banner".into(),
         "-i".into(),

@@ -266,10 +266,7 @@ pub fn probe_local(
     if !out.status.success() {
         return Err(ProbeFailure {
             kind: ProbeErrorKind::NotVideo,
-            message: format!(
-                "ffprobe 探测失败：{}",
-                decode_text(&out.stderr).trim()
-            ),
+            message: format!("ffprobe 探测失败：{}", decode_text(&out.stderr).trim()),
         });
     }
     let text = decode_text(&out.stdout);
@@ -489,9 +486,7 @@ pub fn parse_ffprobe_json(text: &str) -> MediaMeta {
                         .as_str()
                         .and_then(|b| b.parse::<f64>().ok())
                         .map(|b| (b / 1000.0) as u32);
-                    meta.sample_rate = s["sample_rate"]
-                        .as_str()
-                        .and_then(|r| r.parse().ok());
+                    meta.sample_rate = s["sample_rate"].as_str().and_then(|r| r.parse().ok());
                 }
             }
             _ => {}
@@ -503,7 +498,10 @@ pub fn parse_ffprobe_json(text: &str) -> MediaMeta {
     }
     // 视频码率兜底：流级 bit_rate 缺失时用 总比特率-音频比特率 估算（Windows 属性同口径）
     if meta.vbitrate_kbps.is_none() {
-        if let Some(fmt_br) = v["format"]["bit_rate"].as_str().and_then(|b| b.parse::<f64>().ok()) {
+        if let Some(fmt_br) = v["format"]["bit_rate"]
+            .as_str()
+            .and_then(|b| b.parse::<f64>().ok())
+        {
             let a_br = meta.abitrate_kbps.unwrap_or(0) as f64 * 1000.0;
             let v_br = fmt_br - a_br;
             if v_br > 0.0 {

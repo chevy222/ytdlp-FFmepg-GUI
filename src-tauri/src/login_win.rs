@@ -6,10 +6,11 @@
 use std::sync::mpsc;
 
 use tauri::webview::PlatformWebview;
-use webview2_com::Microsoft::Web::WebView2::Win32::{
-    COREWEBVIEW2_COOKIE_SAME_SITE_KIND, ICoreWebView2Cookie, ICoreWebView2CookieList, ICoreWebView2_2,
-};
 use webview2_com::GetCookiesCompletedHandler;
+use webview2_com::Microsoft::Web::WebView2::Win32::{
+    ICoreWebView2Cookie, ICoreWebView2CookieList, ICoreWebView2_2,
+    COREWEBVIEW2_COOKIE_SAME_SITE_KIND,
+};
 use windows::core::{Interface, PCWSTR, PWSTR};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
@@ -68,7 +69,8 @@ pub fn fetch_cookies_com(webview: &PlatformWebview, host: &str) -> Option<Vec<Co
     let completed: webview2_com::CompletedClosure<
         windows::core::HRESULT,
         Option<ICoreWebView2CookieList>,
-    > = Box::new(move |err: windows::core::Result<()>, cookies: Option<ICoreWebView2CookieList>| {
+    > = Box::new(
+        move |err: windows::core::Result<()>, cookies: Option<ICoreWebView2CookieList>| {
             let result = (|| -> windows::core::Result<Option<Vec<CookieEntry>>> {
                 err?;
                 let list = match cookies {
@@ -86,7 +88,8 @@ pub fn fetch_cookies_com(webview: &PlatformWebview, host: &str) -> Option<Vec<Co
             })();
             let _ = tx.send(result.ok().flatten());
             Ok(())
-        });
+        },
+    );
 
     let handler = GetCookiesCompletedHandler::create(completed);
     unsafe {

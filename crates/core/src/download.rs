@@ -506,7 +506,7 @@ pub fn post_process(
     mut on_log: impl FnMut(String),
 ) -> Result<PathBuf> {
     // 先解析产物（MD-06 与后处理共用一次探测）
-    let probe = probe::probe_local(resolver, input, |l| on_log(l))
+    let probe = probe::probe_local(resolver, input, &mut on_log)
         .map_err(|e| CoreError::Io(std::io::Error::other(format!("产物解析失败：{}", e))))?;
     let meta = &probe.meta;
 
@@ -715,9 +715,9 @@ pub fn is_video_file(p: &Path) -> bool {
 pub fn probe_output(
     resolver: &ToolResolver,
     path: &Path,
-    mut on_log: impl FnMut(String),
+    on_log: impl FnMut(String),
 ) -> Result<MediaMeta> {
-    let p = probe::probe_local(resolver, path, |l| on_log(l))
+    let p = probe::probe_local(resolver, path, on_log)
         .map_err(|e| CoreError::Io(std::io::Error::other(format!("产物解析失败：{}", e))))?;
     Ok(p.meta)
 }
@@ -823,10 +823,8 @@ mod tests {
 
     #[test]
     fn parse_merger_line_extracts_final_path() {
-        let p = parse_merger_path(
-            "[Merger] Merging formats into \"D:/videos/标题 [abc].mp4\"",
-        )
-        .unwrap();
+        let p = parse_merger_path("[Merger] Merging formats into \"D:/videos/标题 [abc].mp4\"")
+            .unwrap();
         assert_eq!(p, PathBuf::from("D:/videos/标题 [abc].mp4"));
         // 非合并行不误判
         assert!(parse_merger_path("[download] Destination: a.mp4").is_none());
@@ -906,8 +904,8 @@ mod tests {
         assert!(p.speed.is_none());
 
         // 完成行：百分比无小数、用 `in <耗时>` 而非 ETA
-        let p =
-            parse_progress_line("[download] 100% of    2.72MiB in 00:00:03 at 885.98KiB/s").unwrap();
+        let p = parse_progress_line("[download] 100% of    2.72MiB in 00:00:03 at 885.98KiB/s")
+            .unwrap();
         assert_eq!(p.percent, 100.0);
         assert!(p.speed.is_none());
 

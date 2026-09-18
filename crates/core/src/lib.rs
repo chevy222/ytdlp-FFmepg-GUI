@@ -19,9 +19,9 @@ pub mod merge;
 pub mod model;
 pub mod paths;
 pub mod probe;
+pub mod thumbs;
 pub mod timefmt;
 pub mod tool_download;
-pub mod thumbs;
 pub mod transcode;
 pub mod worker;
 
