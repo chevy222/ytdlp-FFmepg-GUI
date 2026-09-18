@@ -323,6 +323,9 @@ pub struct MediaItem {
     pub log: VecDeque<String>,
     #[serde(default)]
     pub meta: MediaMeta,
+    /// 封面缩略图本地路径（config/cache/thumbs/<id>.jpg）
+    #[serde(default)]
+    pub thumb: Option<String>,
     pub rot_angle: RotAngle,
     /// 下载任务专属：选中格式
     #[serde(default)]
@@ -358,6 +361,7 @@ impl MediaItem {
             file: None,
             log: VecDeque::new(),
             meta: MediaMeta::default(),
+            thumb: None,
             rot_angle: RotAngle::ZERO,
             format_id: None,
             audio_only: false,

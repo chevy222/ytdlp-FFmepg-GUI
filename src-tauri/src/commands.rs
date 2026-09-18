@@ -250,6 +250,34 @@ fn run_probe(app: AppHandle, id: String) {
                 let _ = &p.is_playlist;
                 let _ = p.playlist_count;
             });
+            // 封面缩略图（异步生成，不阻塞就绪）
+            {
+                let app2 = app.clone();
+                let id2 = id.clone();
+                let cache_dir = state.paths.cache_dir();
+                let thumb_url = p.thumbnail_url.clone();
+                let local_path = item.path.clone();
+                let resolver2 = resolver.clone();
+                let _ = tauri::async_runtime::spawn(async move {
+                    let dest = ytdlp_core::thumbs::thumb_path(&cache_dir, &id2);
+                    let r = if let Some(u) = thumb_url {
+                        if u.is_empty() {
+                            Ok(())
+                        } else {
+                            ytdlp_core::thumbs::save_remote_thumb(&u, &dest)
+                        }
+                    } else if let Some(p) = local_path {
+                        ytdlp_core::thumbs::extract_thumb(&resolver2, std::path::Path::new(&p), &dest)
+                    } else {
+                        Ok(())
+                    };
+                    if let Ok(()) = r {
+                        update_item(&app2, &id2, |it| {
+                            it.thumb = Some(dest.to_string_lossy().into_owned());
+                        });
+                    }
+                });
+            }
             // URL 已就绪：触发 5 秒倒计时自动下载（前端计时，后端只发可下载信号）
             if url_src {
                 let _ = app.emit("item:ready", serde_json::json!({ "id": id }));
@@ -477,6 +505,29 @@ fn finish_download(
             it.eta = None;
         }
     });
+    // 下载完成后：用最终产物抽帧更新封面（Done 且有产物路径）
+    if final_status == Status::Done {
+        if let Some(out_path) = result
+            .as_ref()
+            .ok()
+            .and_then(|o| o.output_paths.first().cloned())
+        {
+            let app2 = app.clone();
+            let id2 = id.to_string();
+            let cache_dir = state.paths.cache_dir();
+            let resolver2 = state.resolver();
+            let _ = tauri::async_runtime::spawn(async move {
+                let dest = ytdlp_core::thumbs::thumb_path(&cache_dir, &id2);
+                if ytdlp_core::thumbs::extract_thumb(&resolver2, std::path::Path::new(&out_path), &dest)
+                    .is_ok()
+                {
+                    update_item(&app2, &id2, |it| {
+                        it.thumb = Some(dest.to_string_lossy().into_owned());
+                    });
+                }
+            });
+        }
+    }
     // 释放并发 slot，启动下一个等待任务（下载/转码/合并共用）
     let next = {
         let mut q = state.queue.lock().unwrap();
