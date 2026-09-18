@@ -74,7 +74,13 @@ impl AppState {
                 cfg.dependencies.deno_path = Some(p.clone());
             }
         }
-        ToolResolver::from_config(&cfg.dependencies)
+        let mut r = ToolResolver::from_config(&cfg.dependencies);
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                r = r.with_tools_dir(dir.join("tools"));
+            }
+        }
+        r
     }
 
     /// 注册取消标志并返回。

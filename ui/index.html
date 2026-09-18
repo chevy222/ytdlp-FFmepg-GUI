@@ -130,6 +130,7 @@
   .set-row .chk2{display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;color:#334155;white-space:nowrap}
   .chk2 input{accent-color:var(--teal)}
   .site-list{border:1px solid #e2e8f0;border-radius:8px;padding:6px 8px;background:#f8fafc;flex:1;min-width:0}
+  .site-empty{border:1px dashed #cbd5e1;border-radius:8px;padding:16px 8px;background:#fff;text-align:center;color:#94a3b8;font-size:12px;flex:1;min-width:0}
   .site-row{display:flex;align-items:center;gap:8px;padding:4px 0}
   .site-row .host{font-size:12px;color:#334155;font-weight:600;min-width:110px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .site-row .meta{font-size:11px;color:#94a3b8;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -736,8 +737,9 @@ function renderSetPage(){
     h+=row('PO-Token 服务',chk('dependencies.potoken_enabled',dp.potoken_enabled,'启用'),'PO-Token（POT）是 YouTube 风控验证令牌（Proof-of-Origin Token），由 deno 运行 potoken 生成器产出，用于通过 YouTube 机器人验证、降低 403/风控拦截概率。默认启用。');
   } else if(curPage==='network'){
     h+=row('代理地址',txt('network.proxy_url',n.proxy_url,'socks5://127.0.0.1:10808'),'常用代理端口：Clash 7890 / V2RayN 10808 / SS 1080');
+    const smap=n.site_proxy||{};
     h+='<div class="set-hd">站点分流（勾选 = 走代理，其余直连）</div><div class="set-row"><div class="v grow">'+
-      '<div class="site-list" id="siteList">'+renderSiteList(n.site_proxy||{})+'</div>'+
+      '<div class="'+(Object.keys(smap).length?'site-list':'site-empty')+'" id="siteList">'+renderSiteList(smap)+'</div>'+
       '<button class="site-add" id="btnSiteAdd">+ 添加站点</button></div></div>';
   } else if(curPage==='cookie'){
     h+='<div class="set-hd">站点 Cookie（存储于 &lt;exe 同级&gt;\\config\\cookies\\，按 HOST 分文件，含 HttpOnly）</div>'+
@@ -780,7 +782,7 @@ function renderSetPage(){
 
 function renderSiteList(map){
   const keys=Object.keys(map||{});
-  if(!keys.length)return '<div style="color:#94a3b8;padding:4px 2px">尚未配置站点分流</div>';
+  if(!keys.length)return '<div style="line-height:1.7">尚未配置站点分流<small style="display:block;color:#cbd5e1;margin-top:2px">点击下方"添加站点"输入 HOST（如 bilibili.com），勾选 = 走代理</small></div>';
   return keys.map(k=>'<div class="site-row"><span class="host">'+esc(k)+'</span>'+
     '<label class="chk2" style="margin-left:auto"><input type="checkbox" data-site="'+esc(k)+'"'+(map[k]?' checked':'')+'>走代理</label>'+
     '<button class="del" data-del-site="'+esc(k)+'">×</button></div>').join('');
@@ -788,7 +790,8 @@ function renderSiteList(map){
 function loadCookieList(){
   INVOKE('list_cookies').then(list=>{
     const el=document.getElementById('cookieList'); if(!el)return;
-    if(!list.length){el.innerHTML='<div style="color:#94a3b8;padding:4px 2px">暂无已保存的站点 Cookie</div>';return;}
+    if(!list.length){el.className='site-empty';el.innerHTML='<div style="line-height:1.7">暂无已保存的站点 Cookie<small style="display:block;color:#cbd5e1;margin-top:2px">去登录站点 → 顶部"登录完成"按钮即可保存 Cookie</small></div>';return;}
+    el.className='site-list';
     el.innerHTML=list.map(c=>'<div class="site-row"><span class="host">'+esc(c.host)+'</span>'+
       '<span class="meta">'+c.count+' 条'+(c.expires_at?' · 过期 '+new Date(c.expires_at*1000).toLocaleDateString():'')+'</span>'+
       '<button class="del" data-del-cookie="'+esc(c.host)+'">×</button></div>').join('');
@@ -813,7 +816,14 @@ function bindSetEvents(){
     INVOKE('delete_cookie',{host:b.dataset.delCookie}).then(()=>loadCookieList()).catch(err=>toast(err));
   }));
   page.querySelectorAll('[data-act="tool-dl"],[data-act="tool-up"]').forEach(b=>b.addEventListener('click',()=>{
-    toast('工具链托管下载/更新在 M2 依赖管理接入（SHA-256 校验后原子激活）');
+    const tool=b.dataset.tool, force=b.dataset.act==='tool-up';
+    const row=b.closest('.toolrow');
+    row.querySelectorAll('.btn').forEach(x=>x.disabled=true);
+    b.textContent='连接中…';
+    INVOKE('download_tool',{tool,force})
+      .then(p=>{toast((force?'更新':'下载')+'完成：'+p);renderSetPage();refreshDeps();})
+      .catch(err=>toast(err))
+      .finally(()=>{row.querySelectorAll('.btn').forEach(x=>{x.disabled=false;x.textContent=x.dataset.act==='tool-up'?'更新':'下载';});});
   }));
   page.querySelectorAll('[data-site]').forEach(b=>b.addEventListener('change',()=>{
     const map=cfgRef().network.site_proxy||{}; map[b.dataset.site]=b.checked; cfgRef().network.site_proxy=map;
@@ -865,6 +875,11 @@ async function init(){
     });
     LISTEN('login:done', ()=>{ toast('Cookie 已保存，正在重新解析需要登录的条目'); });
     LISTEN('cookies:changed', ()=>{ if(curPage==='cookie')loadCookieList(); });
+    LISTEN('tool:progress', e=>{
+      const p=e.payload; if(!p||!p.tool)return;
+      const btn=document.querySelector('.toolrow [data-tool="'+p.tool+'"]');
+      if(btn&&btn.disabled)btn.textContent=p.phase+(p.phase==='下载'||p.phase==='安装'?(' '+Math.round((p.percent||0)*100)+'%'):'');
+    });
   }catch(err){ console.error(err); toast('初始化失败：'+err); }
 }
 init();

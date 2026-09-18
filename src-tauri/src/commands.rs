@@ -18,6 +18,7 @@ use ytdlp_core::model::{ItemKind, MediaItem, Status};
 use ytdlp_core::config::NetworkConfig;
 use ytdlp_core::merge::{self, MergeParams};
 use ytdlp_core::transcode::{self, TranscodeParams};
+use ytdlp_core::tool_download::{ToolDownloader, ToolKind};
 use ytdlp_core::probe::{self, ProbeErrorKind};
 use ytdlp_core::worker::SubmitOutcome;
 use ytdlp_core::{transition, CoreError};
@@ -33,6 +34,36 @@ pub fn probe_hw_encoders(app: AppHandle) -> CmdResult<serde_json::Value> {
     let hw = transcode::detect_hw_encoders(&resolver)
         .map_err(|e| format!("探测编码器失败：{}", e))?;
     Ok(serde_json::json!({ "qsv": hw.qsv, "nvenc": hw.nvenc, "amf": hw.amf }))
+}
+
+/// 工具链托管下载/更新（依赖页）：下载到 <exe 同级>\tools\，SHA-256 校验后原子激活。
+/// 进度通过 "tool:progress" 事件上报。`force=true` 覆盖已存在的工具。
+#[tauri::command]
+pub async fn download_tool(app: AppHandle, tool: String, force: bool) -> CmdResult<String> {
+    let kind = ToolKind::from_config_key(&tool)
+        .ok_or_else(|| format!("未知工具键：{tool}"))?;
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_default();
+    let dl = ToolDownloader::new(
+        exe_dir.join("tools"),
+        exe_dir.join("temp").join("tool_dl"),
+    );
+    let app2 = app.clone();
+    let t = tool.clone();
+    let path = tauri::async_runtime::spawn_blocking(move || {
+        let mut prog = |phase: String, pct: f32| {
+            let _ = app2.emit(
+                "tool:progress",
+                serde_json::json!({ "tool": t.clone(), "phase": phase, "percent": pct }),
+            );
+        };
+        dl.download(kind, force, &mut prog)
+    })
+    .await
+    .map_err(|e| format!("下载任务异常：{e}"))??;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 /// 依赖自检项（前端显示）。

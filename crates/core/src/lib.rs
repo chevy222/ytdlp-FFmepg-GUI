@@ -19,6 +19,7 @@ pub mod merge;
 pub mod model;
 pub mod paths;
 pub mod probe;
+pub mod tool_download;
 pub mod transcode;
 pub mod worker;
 
