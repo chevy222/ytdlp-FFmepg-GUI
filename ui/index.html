@@ -796,7 +796,6 @@ function renderSetPage(){
     h+=row('默认编码器（自动 = QSV → libx265 兜底）',sel('transcode.force_encoder_mode',t.force_encoder_mode,encOpts),'硬件编码器运行失败自动回退 libx265；未检测到的选项仍可选用');
     h+=row('QSV low_power',chk('transcode.low_power',t.low_power,''));
     h+=row('保留封面',chk('transcode.keep_cover',t.keep_cover,''));
-    h+='<div class="set-row"><div class="k">x265 CRF<small>固定 23，不提供配置</small></div><div class="v"><span style="color:#94a3b8">23（固定）</span></div></div>';
   } else if(curPage==='general'){
     h+=row('默认输出目录（留空 = 桌面）',txt('general.default_output_dir',g.default_output_dir,'桌面'));
     h+=row('碰撞命名策略',sel('general.collision_policy',g.collision_policy,[['auto_inc','自动 +1 递增'],['skip','SKIP 跳过']]));
