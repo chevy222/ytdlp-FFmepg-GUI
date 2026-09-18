@@ -1,7 +1,7 @@
 # ytdlp-FFmpeg-GUI（影栈）本地构建脚本（PowerShell 7，与 CI 同构）
 # 用法：pwsh ./scripts/build.ps1
 # 前置：Windows 10/11 + WebView2 运行时（Win11 自带）+ Rust 工具链（rustup stable）
-# 产物：src-tauri/target/release/ytdlp-FFmpeg-GUI.exe（绿色便携单 EXE，无需安装包）
+# 产物：target/release/ytdlp-FFmpeg-GUI.exe（workspace 根即仓库根，单 EXE 无需安装包）
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -25,8 +25,8 @@ Write-Host "==> [4/4] Release 构建" -ForegroundColor Cyan
 cargo build --release
 if ($LASTEXITCODE -ne 0) { throw "Release 构建失败" }
 
-$Exe = Join-Path $Root "src-tauri\target\release\ytdlp-FFmpeg-GUI.exe"
+$Exe = Join-Path $Root "target\release\ytdlp-FFmpeg-GUI.exe"
 if (-not (Test-Path $Exe)) { throw "未找到产物：$Exe" }
 $Size = (Get-Item $Exe).Length / 1MB
 Write-Host "==> 构建完成：$Exe（$([math]::Round($Size,1)) MB）" -ForegroundColor Green
-Write-Host "    交付形态：单 EXE（绿色便携，运行时目录 config/temp/tools/logs 自动创建于 exe 同级）"
+Write-Host "    交付形态：单 EXE（绿色便携，运行时目录 config/temp/tools 自动创建于 exe 同级）"

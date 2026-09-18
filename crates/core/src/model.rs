@@ -169,6 +169,19 @@ pub struct MediaMeta {
     /// 首音频流采样率 Hz
     #[serde(default)]
     pub sample_rate: Option<u32>,
+    /// 主视频流绝对索引（ffprobe `index`）。
+    /// 封面流（attached_pic）可能排在主视频之前，映射必须用绝对索引，
+    /// 否则 `0:v:0` 会选到封面（§TC-08 / MD-02）。
+    #[serde(default)]
+    pub video_stream_index: Option<u32>,
+    /// 封面流（attached_pic）绝对索引；`-map` / `-filter_complex` 按此映射。
+    /// 注意：ffmpeg 的 `0:t?` 在 MP4 上**选不中** attached_pic（实测），必须用绝对索引。
+    #[serde(default)]
+    pub cover_stream_index: Option<u32>,
+    /// 容器内旋转标记（stream tags `rotate`，MD-02 采集）。
+    /// 仅记录源文件标记；实际转码采用条目 `rot_angle`（TC-04 手动旋转）。
+    #[serde(default)]
+    pub rotate_tag: Option<i32>,
     /// URL 解析所得清晰度/格式列表（MD-01）
     pub formats: Vec<String>,
     /// 结构化下载格式列表（DL-02 格式选择；含 format_id 供下载使用）
@@ -241,14 +254,18 @@ impl DownloadFormat {
 }
 
 impl MediaMeta {
-    /// 画质/格式列渲染（11 项字段，自动换行；需求文档 §6.2 / C8）。
+    /// 画质/格式列渲染（12 项字段，自动换行；需求文档 §6.2）。
+    ///
+    /// 字段全集：容器 · 分辨率 · 编码器 · 视频码率 · 帧率 · 音频编码 ·
+    /// 音频采样率 · 音频码率 · 音轨数 · 最大音量 · 时长 · 大小
+    /// （与 `ui/index.html::qualityLine` 保持同一口径）。
     pub fn quality_line(&self) -> String {
         let mut parts = Vec::new();
         if let Some(c) = &self.container {
             parts.push(c.clone());
         }
         if let Some(h) = self.height {
-            parts.push(format!("{}P", h));
+            parts.push(resolution_label(h));
         }
         if let Some(c) = &self.vcodec {
             parts.push(c.clone());
@@ -262,11 +279,14 @@ impl MediaMeta {
         if let Some(c) = &self.acodec {
             parts.push(c.clone());
         }
+        if let Some(sr) = self.sample_rate {
+            parts.push(sample_rate_label(sr));
+        }
         if let Some(b) = self.abitrate_kbps {
             parts.push(format!("{}k", b));
         }
-        if let Some(c) = self.audio_channels {
-            parts.push(format!("{}声道", c));
+        if let Some(t) = self.audio_tracks {
+            parts.push(format!("{}轨", t));
         }
         if let Some(v) = self.audio_volume.max_volume_db {
             parts.push(format!("{:.1}dB", v));
@@ -280,6 +300,28 @@ impl MediaMeta {
             parts.push(human_size(b));
         }
         parts.join(" · ")
+    }
+}
+
+/// 分辨率标签：2160 及以上 → `4K`，1440–2159 → `2K`，其余 `{短边}P`（§6.2 原型）。
+pub fn resolution_label(height: u32) -> String {
+    match height {
+        2160.. => "4K".to_string(),
+        1440..=2159 => "2K".to_string(),
+        _ => format!("{}P", height),
+    }
+}
+
+/// 采样率标签：48000 → `48kHz`，44100 → `44.1kHz`，否则 `{hz}Hz`。
+pub fn sample_rate_label(hz: u32) -> String {
+    if hz < 1000 {
+        return format!("{}Hz", hz);
+    }
+    let khz = f64::from(hz) / 1000.0;
+    if khz.fract().abs() < 0.05 {
+        format!("{:.0}kHz", khz)
+    } else {
+        format!("{:.1}kHz", khz)
     }
 }
 
@@ -661,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn quality_line_renders_11_fields() {
+    fn quality_line_renders_12_fields() {
         let meta = MediaMeta {
             container: Some("MP4".into()),
             height: Some(2160),
@@ -669,9 +711,9 @@ mod tests {
             vbitrate_kbps: Some(12000),
             fps: Some(60.0),
             acodec: Some("AAC".into()),
+            sample_rate: Some(48000),
             abitrate_kbps: Some(320),
             audio_tracks: Some(2),
-            audio_channels: Some(2),
             audio_volume: AudioVolume {
                 max_volume_db: Some(-8.2),
                 ..Default::default()
@@ -683,8 +725,21 @@ mod tests {
         let line = meta.quality_line();
         assert_eq!(
             line,
-            "MP4 · 2160P · HEVC · 12Mbps · 60fps · AAC · 320k · 2声道 · -8.2dB · 05:32 · 34.0MB"
+            "MP4 · 4K · HEVC · 12Mbps · 60fps · AAC · 48kHz · 320k · 2轨 · -8.2dB · 05:32 · 34.0MB"
         );
+    }
+
+    #[test]
+    fn resolution_and_sample_rate_labels() {
+        assert_eq!(resolution_label(2160), "4K");
+        assert_eq!(resolution_label(4320), "4K");
+        assert_eq!(resolution_label(1440), "2K");
+        assert_eq!(resolution_label(1080), "1080P");
+        assert_eq!(resolution_label(720), "720P");
+        assert_eq!(sample_rate_label(48000), "48kHz");
+        assert_eq!(sample_rate_label(44100), "44.1kHz");
+        assert_eq!(sample_rate_label(8000), "8kHz");
+        assert_eq!(sample_rate_label(800), "800Hz");
     }
 
     #[test]

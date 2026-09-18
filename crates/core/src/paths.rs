@@ -89,10 +89,9 @@ pub fn atomic_write_json<T: serde::Serialize>(path: &Path, value: &T) -> crate::
     let tmp = path.with_extension("json.tmp");
     let bytes = serde_json::to_vec_pretty(value)?;
     std::fs::write(&tmp, &bytes)?;
-    // rename 原子替换；Windows 上目标存在时先尝试替换
-    if path.exists() {
-        let _ = std::fs::remove_file(path);
-    }
+    // 直接 rename 覆盖目标：std::fs::rename 在 Windows 上走 MoveFileExW
+    // （MOVEFILE_REPLACE_EXISTING），在类 Unix 上是原子替换。
+    // 不要"先 remove 再 rename"——那会在两步之间制造文件缺失窗口，崩溃即丢整份配置。
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
@@ -144,10 +143,12 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
         assert_eq!(v["a"], 1);
-        // 覆盖写
+        // 覆盖写（不再"先删后改名"，必须直接覆盖成功）
         atomic_write_json(&f, &serde_json::json!({"a": 2})).unwrap();
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
         assert_eq!(v["a"], 2);
+        // 临时文件不残留
+        assert!(!root.path().join("config/config.json.tmp").exists());
     }
 }

@@ -29,6 +29,15 @@ jobs:
       - name: Clippy 质量门禁（-D warnings）
         run: cargo clippy -p ytdlp-core --all-targets -- -D warnings
 
+      - name: Clippy 质量门禁（GUI crate，-D warnings）
+        run: cargo clippy -p ytdlp-gui --all-targets -- -D warnings
+
+      - name: 依赖审计（信息性；发现公告不阻塞构建）
+        continue-on-error: true
+        run: |
+          cargo install cargo-audit --locked --quiet
+          cargo audit
+
       - name: Release 构建
         run: cargo build --release
 

@@ -359,18 +359,22 @@ const ST_LABEL = { Probing:'解析中', Ready:'已就绪', Downloading:'下载�
 
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
+// 画质/格式列：12 项源元数据（容器·分辨率·编码·视频码率·帧率·音频编码·采样率·音频码率·音轨数·最大音量·时长·大小）
+// 与核心层 MediaMeta::quality_line 保持同一口径
+function resLabel(h){ return h>=2160?'4K':(h>=1440?'2K':h+'P'); }
+function srLabel(hz){ if(hz<1000)return hz+'Hz'; const k=hz/1000; return (Math.abs(k-Math.round(k))<0.05?String(Math.round(k)):k.toFixed(1))+'kHz'; }
 function qualityLine(m){
   if(!m)return '';
   const p=[];
   if(m.container)p.push(m.container);
-  if(m.height)p.push(m.height+'P');
+  if(m.height)p.push(resLabel(m.height));
   if(m.vcodec)p.push(m.vcodec);
   if(m.vbitrate_kbps)p.push(m.vbitrate_kbps>=1000?(m.vbitrate_kbps/1000).toFixed(1)+'Mbps':m.vbitrate_kbps+'k');
   if(m.fps)p.push(Math.round(m.fps)+'fps');
   if(m.acodec)p.push(m.acodec);
-  if(m.sample_rate)p.push(m.sample_rate>=1000?(m.sample_rate/1000).toFixed(1).replace(/\.0$/,'')+'kHz':m.sample_rate+'Hz');
+  if(m.sample_rate)p.push(srLabel(m.sample_rate));
   if(m.abitrate_kbps)p.push(m.abitrate_kbps+'k');
-  if(m.audio_channels)p.push(m.audio_channels+'声道');
+  if(m.audio_tracks)p.push(m.audio_tracks+'轨');
   if(m.audio_volume && m.audio_volume.max_volume_db!=null)p.push(m.audio_volume.max_volume_db.toFixed(1)+'dB');
   if(m.duration_secs!=null){const d=Math.floor(m.duration_secs);p.push(String(Math.floor(d/60)).padStart(2,'0')+':'+String(d%60).padStart(2,'0'));}
   if(m.size_bytes!=null)p.push(humanSize(m.size_bytes));
@@ -440,7 +444,7 @@ function rotSvg(cw){
 function rowHtml(it){
   const id=esc(it.id);
   const ra=it.rot_angle; const ang=(typeof ra==='number'?ra:((ra&&ra.degrees)||0));
-  const probing = it.status==='probing';
+  const probing = it.status==='Probing';
   const cv = probing ? '' :
       '<div class="cv"><div class="thumb'+(it.thumb?'':' empty')+(ang?' rot'+(ang%360):'')+'" data-id="'+id+'">'+(it.thumb?('<img src="'+thumbSrc(it.thumb)+'" alt="">'):'<span class="ph">影</span>')+'</div>'+
       '<span class="rotbadge'+(ang?' show':'')+'">'+ang+'°</span></div>';

@@ -21,6 +21,8 @@ use crate::{CoreError, Result};
 pub struct MergeParams {
     pub inputs: Vec<PathBuf>,
     pub out_dir: PathBuf,
+    /// 任务私有临时目录根（`<exe 同级>\temp\`，§3.7）——中间产物不得落在输出目录
+    pub temp_dir: PathBuf,
     /// 输出文件名（可编辑，默认 合并_<时间戳>）
     pub filename: String,
     /// 容器：mp4 | mkv
@@ -43,8 +45,12 @@ impl MergeParams {
     }
 }
 
-/// 同参判定（MG-02）：vcodec/height/fps/acodec/sample_rate/extradata 一致；
-/// 音频缺失视为一致仅当所有段都无音频。
+/// 同参判定（MG-02）：vcodec/height/fps/acodec/sample_rate **且 extradata（SPS/PPS）**
+/// 一致；音频缺失视为一致仅当所有段都无音频。
+///
+/// extradata **未知即判定不一致**：探测拿不到 SPS/PPS 时无法证明"零重编码直拼安全"，
+/// 此时走统一转码（模式 B）比冒险直拼更安全 —— concat demuxer 对 SPS 不一致的输入
+/// **不会报错**，只会从第 2 段起花屏（实测确认）。
 fn same_parameters(metas: &[MediaMeta]) -> bool {
     if metas.len() < 2 {
         return false;
@@ -61,7 +67,9 @@ fn same_parameters(metas: &[MediaMeta]) -> bool {
     let a = |m: &MediaMeta| (m.acodec.clone(), m.sample_rate);
     let ref_v = v(first);
     let ref_a = a(first);
-    metas.iter().all(|m| v(m) == ref_v && a(m) == ref_a)
+    metas
+        .iter()
+        .all(|m| m.extradata.is_some() && v(m) == ref_v && a(m) == ref_a)
 }
 
 /// 各段时长合计（进度换算基准）。
@@ -304,8 +312,6 @@ pub fn run_merge(
         return Err(CoreError::Io(std::io::Error::other("合并至少需要 2 个输入")));
     }
     let out = output_path(params)?;
-    let duration = 0.0; // 探测后更新
-    let _ = duration;
 
     // 1) 探测全部输入
     let mut metas = Vec::with_capacity(params.inputs.len());
@@ -320,9 +326,9 @@ pub fn run_merge(
         on_log("输入参数不一致（编码/分辨率/帧率/音频/采样率），按统一模式处理".into());
     }
 
-    // 2) 任务私有临时目录
+    // 2) 任务私有临时目录（§3.7：中间产物一律在 <exe 同级>\temp\，不污染输出目录）
     let task_id = uuid::Uuid::new_v4().to_string();
-    let tmp = params.out_dir.join("temp").join(format!("merge_{}", task_id));
+    let tmp = params.temp_dir.join(format!("merge_{}", task_id));
     std::fs::create_dir_all(&tmp)?;
     let cleanup = |t: &Path, out: &Path| {
         let _ = std::fs::remove_dir_all(t);
@@ -416,7 +422,15 @@ pub fn run_merge(
         Ok(mut o) => {
             let _ = std::fs::remove_dir_all(&tmp);
             if params.normalize_audio {
-                match post_normalize(resolver, &o, params.max_gain_db, cancel, &mut on_log) {
+                match post_normalize(
+                    resolver,
+                    &o,
+                    params.max_gain_db,
+                    &params.container,
+                    &params.temp_dir,
+                    cancel,
+                    &mut on_log,
+                ) {
                     Ok(n) => o = n,
                     Err(CoreError::Cancelled) => {
                         let _ = std::fs::remove_file(&o);
@@ -445,11 +459,13 @@ pub fn run_merge(
 }
 
 /// 合并产物音量归一化（MG-05）：probe 音量 → 增益至峰值 0dBFS（不超过上限），
-/// 视频流 copy、音频重编码 aac；输出临时文件后原子替换。
+/// 视频流 copy、音频重编码 aac；中间文件写在任务临时目录，成功后原子替换。
 fn post_normalize(
     resolver: &ToolResolver,
     input: &Path,
     max_gain_db: f32,
+    container: &str,
+    temp_dir: &Path,
     cancel: &Arc<AtomicBool>,
     on_log: &mut dyn FnMut(String),
 ) -> Result<PathBuf> {
@@ -465,8 +481,13 @@ fn post_normalize(
         return Ok(input.to_path_buf());
     }
     let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("mp4");
-    let tmp = input.with_extension(format!("norm_tmp.{}", ext));
-    let args: Vec<String> = vec![
+    std::fs::create_dir_all(temp_dir)?;
+    let tmp = temp_dir.join(format!(
+        "norm_{}.{}",
+        uuid::Uuid::new_v4(),
+        ext
+    ));
+    let mut args: Vec<String> = vec![
         "-hide_banner".into(),
         "-i".into(),
         input.to_string_lossy().into_owned(),
@@ -478,11 +499,15 @@ fn post_normalize(
         "aac".into(),
         "-af".into(),
         format!("volume={:.2}dB", gain),
-        "-movflags".into(),
-        "+faststart".into(),
-        "-y".into(),
-        tmp.to_string_lossy().into_owned(),
     ];
+    // `-movflags` 只对 mp4/mov 系列封装有意义；MKV 下实测被静默忽略（exit 0、无告警），
+    // 传了无害，但没必要 —— 这里只在非 mkv 时附加
+    if container != "mkv" {
+        args.push("-movflags".into());
+        args.push("+faststart".into());
+    }
+    args.push("-y".into());
+    args.push(tmp.to_string_lossy().into_owned());
     on_log(format!("音量归一化：+{:.1}dB", gain));
     run_piped_progress(resolver, args, cancel, 0.0, &mut |_| {}, on_log)?;
     if !tmp.exists() {
@@ -492,8 +517,14 @@ fn post_normalize(
             stderr: "音量归一化未生成输出".into(),
         });
     }
-    let _ = std::fs::remove_file(input);
-    std::fs::rename(&tmp, input)?;
+    // 原子替换：rename 直接覆盖（Windows MOVEFILE_REPLACE_EXISTING），
+    // 不再"先删后改名"（中途失败会连合并产物一起丢）
+    if let Err(e) = std::fs::rename(&tmp, input) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(CoreError::Io(std::io::Error::other(format!(
+            "音量归一化产物替换失败：{e}"
+        ))));
+    }
     Ok(input.to_path_buf())
 }
 
@@ -573,19 +604,36 @@ mod tests {
     }
 
     #[test]
-    fn output_path_auto_inc() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = MergeParams {
+    fn same_params_false_when_extradata_unknown() {
+        // 探测拿不到 SPS/PPS 时不能宣称"参数一致"（否则直拼可能花屏且 ffmpeg 不报错），
+        // 必须退回统一转码路径
+        let mut a = meta("h264", 1080, 30.0, "aac", 48000, "aabb", 10.0);
+        a.extradata = None;
+        let b = meta("h264", 1080, 30.0, "aac", 48000, "aabb", 20.0);
+        assert!(!same_parameters(&[a, b]));
+    }
+
+    /// 测试用合并参数（默认 mp4 / auto）。
+    fn merge_params_mk(dir: &Path) -> MergeParams {
+        MergeParams {
             inputs: vec![],
-            out_dir: dir.path().to_path_buf(),
-            filename: "合并_20260917".into(),
+            out_dir: dir.to_path_buf(),
+            temp_dir: dir.join("temp"),
+            filename: "合并_x".into(),
             container: "mp4".into(),
             encoder_mode: "auto".into(),
             low_power: false,
             collision_policy: "auto_inc".into(),
             normalize_audio: false,
             max_gain_db: 24.0,
-        };
+        }
+    }
+
+    #[test]
+    fn output_path_auto_inc() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = merge_params_mk(dir.path());
+        p.filename = "合并_20260917".into();
         let a = output_path(&p).unwrap();
         std::fs::write(&a, b"x").unwrap();
         let b = output_path(&p).unwrap();
@@ -595,17 +643,10 @@ mod tests {
     #[test]
     fn output_path_skip() {
         let dir = tempfile::tempdir().unwrap();
-        let p = MergeParams {
-            inputs: vec![],
-            out_dir: dir.path().to_path_buf(),
-            filename: "合并_x".into(),
-            container: "mkv".into(),
-            encoder_mode: "auto".into(),
-            low_power: false,
-            collision_policy: "skip".into(),
-            normalize_audio: false,
-            max_gain_db: 24.0,
-        };
+        let mut p = merge_params_mk(dir.path());
+        p.filename = "合并_x".into();
+        p.container = "mkv".into();
+        p.collision_policy = "skip".into();
         let a = output_path(&p).unwrap();
         std::fs::write(&a, b"x").unwrap();
         assert!(output_path(&p).is_err());

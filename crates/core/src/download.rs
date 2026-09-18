@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::config::{DownloadConfig, GeneralConfig};
-use crate::exec::{ChildGuard, Tool, ToolResolver};
+use crate::exec::{decode_text, ChildGuard, Tool, ToolResolver};
 use crate::model::MediaMeta;
 use crate::probe;
 use crate::{CoreError, Result};
@@ -37,6 +37,9 @@ pub struct DownloadParams {
     pub proxy: Option<String>,
     pub cookies_file: Option<PathBuf>,
     pub sections: Option<(String, String)>,
+    /// yt-dlp `--js-runtimes` 取值（如 `deno:C:\tools\deno.exe`）。
+    /// YouTube 组件必需；留空表示交给 yt-dlp 自行探测 PATH。
+    pub js_runtime: Option<String>,
 }
 
 /// 文件名模板 → yt-dlp 输出模板（DL-10）。
@@ -103,7 +106,7 @@ pub fn build_args(url: &str, p: &DownloadParams, cfg: &DownloadConfig) -> Vec<St
     args.push("--retry-sleep".into());
     args.push("3".into());
     // 封面/元数据
-    if cfg.embed_cover {
+    if p.embed_cover {
         args.push("--embed-thumbnail".into());
         args.push("--embed-metadata".into());
     }
@@ -145,9 +148,17 @@ pub fn build_args(url: &str, p: &DownloadParams, cfg: &DownloadConfig) -> Vec<St
     args.push("--windows-filenames".into());
     args.push("--trim-filenames".into());
     args.push("120".into());
+    // JS 运行时（§3.6 依赖）：YouTube 组件必需，托管/配置的 deno 必须显式传入
+    if let Some(rt) = &p.js_runtime {
+        if !rt.is_empty() {
+            args.push("--js-runtimes".into());
+            args.push(rt.clone());
+        }
+    }
     // 其他
     args.push("--no-warnings".into());
-    args.push("--ignore-errors".into());
+    // 注意：不加 `--ignore-errors` —— 它会让"下载/后处理失败"仍以退出码 0 结束，
+    // 使 run_download 的成功判定失效（失败任务会被当成完成）。见 §4 失败安全。
     // URL 最后
     args.push(url.to_string());
     args
@@ -208,10 +219,76 @@ fn plain_re() -> regex::Regex {
 static FULL_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
 static PLAIN_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
 
+/// 解析 yt-dlp 合并完成行：`[Merger] Merging formats into "<path>"`。
+///
+/// 音视频分流（DASH）下载时 `[download] Destination:` 指向随后被 yt-dlp 删除的
+/// 中间文件（`xxx.f137.mp4` / `xxx.f140.m4a`），真正的最终产物只出现在这一行 ——
+/// 不解析它就会拿到一堆已删除的路径，进而触发错误的兜底定位（MD-06）。
+pub fn parse_merger_path(line: &str) -> Option<PathBuf> {
+    let t = line.trim();
+    let payload = t.split_once("Merging formats into ")?.1.trim();
+    let path = match (payload.find('"'), payload.rfind('"')) {
+        (Some(a), Some(b)) if b > a => &payload[a + 1..b],
+        _ => payload,
+    };
+    if path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(path))
+    }
+}
+
+/// 解析 yt-dlp「已下载过」行：`[download] <path> has already been downloaded`。
+///
+/// `--no-overwrites` 下重复下载同一 URL 时 yt-dlp 不会产生 Destination 行，
+/// 只打印这一行；不解析它会把"文件其实已存在"误判为下载失败。
+pub fn parse_already_downloaded_path(line: &str) -> Option<PathBuf> {
+    let t = line.trim();
+    let rest = t.strip_prefix("[download]")?.trim();
+    let path = rest.strip_suffix("has already been downloaded")?.trim();
+    if path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(path))
+    }
+}
+
+fn push_unique(v: &mut Vec<PathBuf>, p: PathBuf) {
+    if !v.contains(&p) {
+        v.push(p);
+    }
+}
+
+/// 目录内"本次任务期间新增/更新"的**最新一个**视频文件（兜底产物定位）。
+///
+/// 与旧实现的关键差别：只接受 `since` 之后出现的文件，且只返回一个 ——
+/// 绝不返回目录里用户原有的视频（旧实现返回目录内全部视频并取最旧的那个，
+/// 后处理会把它重编码后原地覆盖）。宁可误报"未找到产物"，也不误伤既有文件。
+pub fn newest_media_since(dir: &Path, since: std::time::SystemTime) -> Option<PathBuf> {
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let path = e.path();
+            if !path.is_file() || !is_video_file(&path) {
+                continue;
+            }
+            if let Ok(t) = std::fs::metadata(&path).and_then(|m| m.modified()) {
+                if t >= since {
+                    files.push((t, path));
+                }
+            }
+        }
+    }
+    files.into_iter().max_by_key(|(t, _)| *t).map(|(_, p)| p)
+}
+
 /// 下载结果。
 #[derive(Debug, Clone)]
 pub struct DownloadOutcome {
     pub output_paths: Vec<PathBuf>,
+    /// 本次没有任何新下载，"产物"是 yt-dlp 报"已下载过"的既有文件。
+    /// 调用方此时**不应**再对它做后处理（否则会原地重编码覆盖用户既有文件）。
+    pub preexisting: bool,
 }
 
 /// 执行下载（阻塞；逐行回调进度；取消置位后杀进程树）。
@@ -228,6 +305,7 @@ pub fn run_download(
     cmd.args(&args);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
+    let started = std::time::SystemTime::now();
     let mut guard = ChildGuard::spawn(&mut cmd)?;
     let stdout = guard
         .stdout()
@@ -236,8 +314,12 @@ pub fn run_download(
         .stderr()
         .ok_or_else(|| CoreError::Io(std::io::Error::other("无法读取 yt-dlp 错误输出")))?;
 
-    let mut output_paths: Vec<PathBuf> = Vec::new();
-    let mut saw_dest = std::collections::HashSet::new();
+    // [download] Destination: <中间/最终文件>
+    let mut dest_paths: Vec<PathBuf> = Vec::new();
+    // [Merger] Merging formats into "<最终文件>"
+    let mut merged_paths: Vec<PathBuf> = Vec::new();
+    // [download] <文件> has already been downloaded
+    let mut already_paths: Vec<PathBuf> = Vec::new();
 
     let stdout_reader = std::io::BufReader::new(stdout);
     let mut lines = stdout_reader.lines();
@@ -250,12 +332,15 @@ pub fn run_download(
             guard.kill_tree();
             break;
         }
+        if let Some(mp) = parse_merger_path(&line) {
+            push_unique(&mut merged_paths, mp);
+        }
+        if let Some(ap) = parse_already_downloaded_path(&line) {
+            push_unique(&mut already_paths, ap);
+        }
         if let Some(prog) = parse_progress_line(&line) {
             if let Some(f) = &prog.file {
-                let p = PathBuf::from(f);
-                if saw_dest.insert(p.clone()) {
-                    output_paths.push(p);
-                }
+                push_unique(&mut dest_paths, PathBuf::from(f));
             }
             on_progress(prog);
         }
@@ -274,31 +359,53 @@ pub fn run_download(
         });
     }
     let _ = stderr;
-    // 兜底：无 Destination 时按 out_dir 最新视频文件
-    if output_paths.is_empty() {
-        output_paths = latest_media_in(&p.out_dir).into_iter().collect();
+    // 产物收敛：
+    // 1) 合并产物行（DASH 下载的最终文件只出现在这里）→ Destination（未合并的单流）
+    //    → "已下载过"行；
+    // 2) 这些路径都来自 yt-dlp 自己的输出，`--no-overwrites` 保证它不会去动既有文件，
+    //    因此"存在即本次产物"（不叠加 mtime 判断：FAT/exFAT 时间戳粒度 2s 会误杀）；
+    // 3) 仅当上面一条路径都没解析到时才做目录扫描兜底，且只认 since 之后新增的**最新一个**
+    //    —— 绝不返回目录里用户原有的视频（旧实现返回全部并取最旧的，会覆盖用户文件）。
+    let mut output_paths: Vec<PathBuf> = Vec::new();
+    for path in merged_paths
+        .iter()
+        .chain(dest_paths.iter())
+        .chain(already_paths.iter())
+    {
+        push_unique(&mut output_paths, path.clone());
     }
-    // 过滤存在的路径
-    output_paths.retain(|p| p.exists());
+    output_paths.retain(|path| path.is_file());
+    if output_paths.is_empty() {
+        if let Some(found) = newest_media_since(&p.out_dir, started) {
+            output_paths.push(found);
+        }
+    }
     if output_paths.is_empty() {
         return Err(CoreError::ProcessFailed {
             program: "yt-dlp".into(),
             code: None,
-            stderr: "下载完成但未找到产物文件".into(),
+            stderr: "下载结束但未找到本次任务的产物文件（输出目录内既有文件未被改动）".into(),
         });
     }
-    Ok(DownloadOutcome { output_paths })
+    // 本次没有产生新文件（只有"已下载过"的既有文件）→ 不做后处理，避免覆盖用户既有文件
+    let preexisting = merged_paths.is_empty() && dest_paths.is_empty();
+    Ok(DownloadOutcome {
+        output_paths,
+        preexisting,
+    })
 }
 
-/// 取消后清理：删除本次输出残留（§UL-06 取消清理）。
-pub fn cleanup_on_cancel(p: &DownloadParams, temp_root: &Path) {
-    let _ = std::fs::remove_dir_all(temp_root);
-    if let Some(dir) = p.out_dir.parent() {
-        let _ = dir;
+/// 取消/结束清理（§UL-06 取消清理）：
+/// **只清理本任务私有目录与本次导出的 Cookie 临时文件**。
+///
+/// 旧实现直接删除全局 `temp/`，会连带删掉其它并发任务的临时目录与 Cookie 文件。
+pub fn cleanup_on_cancel(temp_dir: &Path, cookies_file: Option<&Path>) {
+    if temp_dir.is_dir() {
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
-    // 输出目录内由本任务产生的 .part/.ytdl 残留由 yt-dlp 取消时自行清理；
-    // 已完成的临时转码产物在 post_process 的 temp 中，一并删除。
-    let _ = p;
+    if let Some(cf) = cookies_file {
+        let _ = std::fs::remove_file(cf);
+    }
 }
 
 fn read_stderr(mut stderr: std::process::ChildStderr) -> String {
@@ -339,39 +446,80 @@ pub fn post_process(
     }
 
     let out = input.with_extension("processed.mp4");
+    // 宽用 -2（自动偶数）；高度按上限裁剪且不放大（IH 小于上限时保持原样）
+    let vf = if need_downscale {
+        Some(format!("scale=-2:'min(ih,{})'", cfg.max_h))
+    } else {
+        None
+    };
+    let main_idx = meta.video_stream_index;
+    let cover_idx = meta.cover_stream_index;
+
     let mut args: Vec<String> = vec![
+        "-hide_banner".into(),
         "-i".into(),
         input.to_string_lossy().into_owned(),
-        "-map".into(),
-        "0:v:0?".into(),
-        "-map".into(),
-        "0:a?".into(),
     ];
-    // 封面流（attached pic）单独映射：mp4 容器不支持 hevc 封面，必须原样 copy
-    if meta.has_cover {
-        args.push("-map".into());
-        args.push("0:m:attached_pic?".into());
-    }
-    // 视频（:0 仅主视频，封面流不受 -c:v:0/-vf 影响）
-    if need_downscale {
-        let target = cfg.max_h;
-        args.push("-vf".into());
-        args.push(format!("scale=-2:'min(ih,{})'", target));
-        args.push("-c:v:0".into());
-        args.push("libx265".into());
-        args.push("-crf".into());
-        args.push("23".into());
-        args.push("-preset".into());
-        args.push("medium".into());
-        args.push("-tag:v:0".into());
-        args.push("hvc1".into());
-    } else {
-        args.push("-c:v:0".into());
-        args.push("copy".into());
-    }
-    if meta.has_cover {
-        args.push("-c:v:1".into());
-        args.push("copy".into());
+    match (&vf, cover_idx) {
+        // 主视频需要滤镜 + 存在封面流：简单滤镜 `-vf` 与第二条视频流的 `copy`
+        // 不能共存（ffmpeg：Filtering and streamcopy cannot be used together），
+        // 且 `0:m:attached_pic?` 本身不是合法流说明符。
+        // 因此主视频走 filter_complex 打标签，封面按**绝对流索引**映射后原样 copy。
+        (Some(filter), Some(ci)) => {
+            let src = main_idx
+                .map(|i| format!("0:{i}"))
+                .unwrap_or_else(|| "0:v:0".to_string());
+            args.push("-filter_complex".into());
+            args.push(format!("[{src}]{filter}[v]"));
+            args.push("-map".into());
+            args.push("[v]".into());
+            args.push("-map".into());
+            args.push("0:a?".into());
+            args.push("-map".into());
+            args.push(format!("0:{ci}?"));
+            args.push("-c:v:0".into());
+            args.push("libx265".into());
+            args.push("-crf".into());
+            args.push("23".into());
+            args.push("-preset".into());
+            args.push("medium".into());
+            // 必须带 `:v:0`：不带流后缀的 `-tag:v` 会落到 mjpeg 封面流上，
+            // mp4 封装直接报 `Tag hvc1 incompatible with output codec id '7'`
+            args.push("-tag:v:0".into());
+            args.push("hvc1".into());
+            args.push("-c:v:1".into());
+            args.push("copy".into());
+        }
+        _ => {
+            if let Some(filter) = &vf {
+                args.push("-vf".into());
+                args.push(filter.clone());
+            }
+            args.push("-map".into());
+            args.push(
+                main_idx
+                    .map(|i| format!("0:{i}?"))
+                    .unwrap_or_else(|| "0:v:0?".to_string()),
+            );
+            args.push("-map".into());
+            args.push("0:a?".into());
+            if let Some(ci) = cover_idx {
+                args.push("-map".into());
+                args.push(format!("0:{ci}?"));
+                args.push("-c:v:1".into());
+                args.push("copy".into());
+            }
+            args.push("-c:v:0".into());
+            args.push(if need_downscale { "libx265" } else { "copy" }.into());
+            if need_downscale {
+                args.push("-crf".into());
+                args.push("23".into());
+                args.push("-preset".into());
+                args.push("medium".into());
+                args.push("-tag:v:0".into());
+                args.push("hvc1".into());
+            }
+        }
     }
     // 音频（增益到峰值 0dBFS，MAXGAIN 封顶 24dB，TC-07 语义）
     if need_gain {
@@ -385,9 +533,6 @@ pub fn post_process(
             args.push("-af".into());
             args.push(format!("volume={:.2}dB", gain));
         }
-    }
-    if !need_gain && !need_downscale {
-        // 仅封面处理无需重编码音频
     }
     args.push("-c:a".into());
     if need_gain {
@@ -425,11 +570,40 @@ pub fn post_process(
         let _ = std::fs::remove_file(&out);
         return Ok(input.to_path_buf());
     }
-    // 原子替换
-    let tmp = out.with_extension("mp4.tmp");
-    let _ = std::fs::rename(&out, &tmp);
-    let _ = std::fs::rename(&tmp, input);
+    // 产物校验（§1.3：校验成功后才原子替换）——能读出主视频流才算成功
+    if !verify_video(resolver, &out) {
+        on_log("后处理产物校验失败（保留原文件）".to_string());
+        let _ = std::fs::remove_file(&out);
+        return Ok(input.to_path_buf());
+    }
+    // 原子替换：Windows 上 std::fs::rename 直接覆盖已存在目标
+    // （MOVEFILE_REPLACE_EXISTING），不再"先删后改名"——那样中途失败会连原文件一起丢。
+    if let Err(e) = std::fs::rename(&out, input) {
+        on_log(format!("后处理产物替换失败（保留原文件）：{e}"));
+        let _ = std::fs::remove_file(&out);
+        return Ok(input.to_path_buf());
+    }
     Ok(input.to_path_buf())
+}
+
+/// 产物校验：ffprobe 能解析且存在主视频流。
+fn verify_video(resolver: &ToolResolver, path: &Path) -> bool {
+    let p = path.to_string_lossy().into_owned();
+    let args: Vec<&str> = vec![
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=codec_name",
+        "-of",
+        "csv=p=0",
+        p.as_str(),
+    ];
+    match crate::exec::run_tool_capture(resolver, Tool::Ffprobe, &args) {
+        Ok(out) => !decode_text(&out.stdout).trim().is_empty(),
+        Err(_) => false,
+    }
 }
 
 fn read_stderr_opt(mut stderr: Option<std::process::ChildStderr>) -> String {
@@ -442,21 +616,6 @@ fn read_stderr_opt(mut stderr: Option<std::process::ChildStderr>) -> String {
         }
         None => String::new(),
     }
-}
-
-/// 目录内最新媒体文件（兜底产物定位）。
-pub fn latest_media_in(dir: &Path) -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for e in rd.flatten() {
-            let p = e.path();
-            if is_video_file(&p) {
-                files.push(p);
-            }
-        }
-    }
-    files.sort_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
-    files
 }
 
 /// 是否视频扩展名。
@@ -492,6 +651,7 @@ mod tests {
             proxy: Some("socks5://127.0.0.1:10808".into()),
             cookies_file: None,
             sections: None,
+            js_runtime: None,
         }
     }
 
@@ -540,6 +700,70 @@ mod tests {
         assert!(joined.contains("--proxy socks5://127.0.0.1:10808"));
         assert!(joined.contains("--newline"));
         assert!(joined.ends_with("https://example.com/v"));
+        // --ignore-errors 会让失败仍以 0 退出，不能加（否则失败被当成功）
+        assert!(!joined.contains("--ignore-errors"), "{}", joined);
+    }
+
+    #[test]
+    fn build_args_passes_js_runtime() {
+        let mut p = params();
+        assert!(!build_args("u", &p, &DownloadConfig::default())
+            .join(" ")
+            .contains("--js-runtimes"));
+        p.js_runtime = Some("deno:C:\\tools\\deno.exe".into());
+        let joined = build_args("u", &p, &DownloadConfig::default()).join(" ");
+        assert!(
+            joined.contains("--js-runtimes deno:C:\\tools\\deno.exe"),
+            "{}",
+            joined
+        );
+    }
+
+    #[test]
+    fn parse_merger_line_extracts_final_path() {
+        let p = parse_merger_path(
+            "[Merger] Merging formats into \"D:/videos/标题 [abc].mp4\"",
+        )
+        .unwrap();
+        assert_eq!(p, PathBuf::from("D:/videos/标题 [abc].mp4"));
+        // 非合并行不误判
+        assert!(parse_merger_path("[download] Destination: a.mp4").is_none());
+        assert!(parse_merger_path("[Merger] Merging formats into ").is_none());
+        assert!(parse_merger_path("").is_none());
+    }
+
+    #[test]
+    fn parse_already_downloaded_line() {
+        let p = parse_already_downloaded_path(
+            "[download] D:/videos/标题 [abc].mp4 has already been downloaded",
+        )
+        .unwrap();
+        assert_eq!(p, PathBuf::from("D:/videos/标题 [abc].mp4"));
+        assert!(parse_already_downloaded_path("[download] Destination: a.mp4").is_none());
+        assert!(parse_already_downloaded_path("[Merger] Merging formats into \"a.mp4\"").is_none());
+        assert!(parse_already_downloaded_path("").is_none());
+        // 空路径不算命中
+        assert!(parse_already_downloaded_path("[download]  has already been downloaded").is_none());
+    }
+
+    #[test]
+    fn newest_media_since_only_returns_new_files() {
+        let dir = tempfile::tempdir().unwrap();
+        // 已存在的旧文件（模拟"输出目录里用户原有的视频"）
+        let old = dir.path().join("old.mp4");
+        std::fs::write(&old, b"x").unwrap();
+        std::fs::write(dir.path().join("note.txt"), b"x").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let since = std::time::SystemTime::now();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let new = dir.path().join("new.mp4");
+        std::fs::write(&new, b"x").unwrap();
+        // 只返回本次之后新增的最新视频，绝不返回 old.mp4
+        assert_eq!(newest_media_since(dir.path(), since), Some(new));
+        // 没有任何新文件时返回 None（调用方据此判失败，而不是去动既有文件）
+        let since2 = std::time::SystemTime::now();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(newest_media_since(dir.path(), since2), None);
     }
 
     #[test]

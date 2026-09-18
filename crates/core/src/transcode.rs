@@ -247,9 +247,12 @@ fn build_vf(rot: RotAngle, max_w: u32, max_h: u32) -> Option<String> {
         } else {
             "ih".into()
         };
-        // min() 内逗号在 filtergraph 里是滤镜链分隔符，需用单引号包裹表达式
+        // min() 内逗号在 filtergraph 里是滤镜链分隔符，需用单引号包裹表达式；
+        // force_divisible_by=2 保证偶数边长 —— 缺了它时非标宽高比会算出奇数宽
+        // （实测 1214x2160 → 607x1080），libx265/QSV 直接报
+        // "Picture width must be an integer multiple of the specified chroma subsampling"
         parts.push(format!(
-            "scale='{}':'{}':force_original_aspect_ratio=decrease",
+            "scale='{}':'{}':force_original_aspect_ratio=decrease:force_divisible_by=2",
             w, h
         ));
     }
@@ -264,8 +267,10 @@ fn build_vf(rot: RotAngle, max_w: u32, max_h: u32) -> Option<String> {
 pub fn build_args(resolver: &ToolResolver, params: &TranscodeParams, meta: &MediaMeta) -> Result<Vec<String>> {
     let (encoder, mut enc_args) = pick_encoder(resolver, &params.encoder_mode, params.low_power)?;
     if params.container == "mp4" && encoder == "libx265" {
-        // hvc1 标签（Apple 兼容）
-        enc_args.push("-tag:v".into());
+        // hvc1 标签（Apple 兼容）。必须带 `:v:0`：不带流后缀的 `-tag:v`
+        // 会落到封面流（mjpeg）上，mp4 封装报
+        // `Tag hvc1 incompatible with output codec id '7' (mp4v)` 并失败
+        enc_args.push("-tag:v:0".into());
         enc_args.push("hvc1".into());
     }
     // 码率封顶（kbps；None 不限制）
@@ -291,26 +296,72 @@ pub fn build_args(resolver: &ToolResolver, params: &TranscodeParams, meta: &Medi
         None
     };
 
+    // 流映射（TC-08 封面跟随 / TC-10 保留全部音轨）：
+    // - 主视频与封面一律用**绝对流索引**：`0:t?` 在 MP4 上选不中 attached_pic
+    //   （实测输出只剩视频+音频），而 `0:v:0` 在封面流靠前时会选到封面；
+    // - 主视频需要滤镜且同时映射封面时，简单滤镜 `-vf` 与第二条视频流的 copy
+    //   不能共存（ffmpeg: Filtering and streamcopy cannot be used together），
+    //   必须改用 filter_complex 打标签；
+    // - 探测不到封面流（如 MKV 以附件形式存放封面）时回退 `0:t?` + `-c:t copy`。
+    let vf = build_vf(params.rot_angle, params.max_w, params.max_h);
+    let main_idx = meta.video_stream_index;
+    let cover_idx = if params.keep_cover {
+        meta.cover_stream_index
+    } else {
+        None
+    };
+    let map_attachments = params.keep_cover && cover_idx.is_none();
+
     let mut args: Vec<String> = vec![
         "-hide_banner".into(),
         "-i".into(),
         params.input.to_string_lossy().into_owned(),
-        "-map".into(),
-        "0:v:0".into(),
-        "-map".into(),
-        "0:a?".into(),
     ];
-    if params.keep_cover {
+    match (&vf, cover_idx) {
+        (Some(filter), Some(ci)) => {
+            let src = main_idx
+                .map(|i| format!("0:{i}"))
+                .unwrap_or_else(|| "0:v:0".to_string());
+            args.push("-filter_complex".into());
+            args.push(format!("[{src}]{filter}[v]"));
+            args.push("-map".into());
+            args.push("[v]".into());
+            args.push("-map".into());
+            args.push("0:a?".into());
+            args.push("-map".into());
+            args.push(format!("0:{ci}?"));
+        }
+        _ => {
+            if let Some(filter) = &vf {
+                args.push("-vf".into());
+                args.push(filter.clone());
+            }
+            args.push("-map".into());
+            args.push(
+                main_idx
+                    .map(|i| format!("0:{i}?"))
+                    .unwrap_or_else(|| "0:v:0?".to_string()),
+            );
+            args.push("-map".into());
+            args.push("0:a?".into());
+            if let Some(ci) = cover_idx {
+                args.push("-map".into());
+                args.push(format!("0:{ci}?"));
+            }
+        }
+    }
+    if map_attachments {
         args.push("-map".into());
         args.push("0:t?".into());
     }
-    if let Some(vf) = build_vf(params.rot_angle, params.max_w, params.max_h) {
-        args.push("-vf".into());
-        args.push(vf);
-    }
-    args.push("-c:v".into());
+    // 视频一律写 `-c:v:0`：封面流作为第二条视频流单独 copy
+    args.push("-c:v:0".into());
     args.push(encoder);
     args.extend(enc_args);
+    if cover_idx.is_some() {
+        args.push("-c:v:1".into());
+        args.push("copy".into());
+    }
     args.push("-c:a".into());
     args.push(if gain.is_some() { "aac" } else { "copy" }.into());
     if let Some(g) = gain {
@@ -319,7 +370,7 @@ pub fn build_args(resolver: &ToolResolver, params: &TranscodeParams, meta: &Medi
             args.push(format!("volume={:.2}dB", g));
         }
     }
-    if params.keep_cover {
+    if map_attachments {
         args.push("-c:t".into());
         args.push("copy".into());
     }
@@ -576,10 +627,70 @@ mod tests {
         assert_eq!(build_vf(RotAngle::ZERO, 0, 0), None);
         let vf = build_vf(RotAngle::from_degrees(90), 1920, 1080).unwrap();
         assert!(vf.starts_with("transpose=1,"), "{}", vf);
-        // min() 内逗号必须被引号包裹，否则 filtergraph 解析为滤镜链分隔符
-        assert!(vf.contains("scale='min(iw,1920)':'min(ih,1080)':force_original_aspect_ratio=decrease"), "{}", vf);
+        // min() 内逗号必须被引号包裹，否则 filtergraph 解析为滤镜链分隔符；
+        // force_divisible_by=2 保证偶数边长（否则奇数宽会让 libx265 直接失败）
+        assert!(
+            vf.contains("scale='min(iw,1920)':'min(ih,1080)':force_original_aspect_ratio=decrease:force_divisible_by=2"),
+            "{}",
+            vf
+        );
         let vf = build_vf(RotAngle::from_degrees(270), 0, 0).unwrap();
         assert_eq!(vf, "transpose=2");
+    }
+
+    #[test]
+    fn build_args_maps_main_and_cover_by_absolute_index() {
+        // 主视频 0、封面 2（典型：视频/音频/attached_pic 封面）
+        let meta = MediaMeta {
+            video_stream_index: Some(0),
+            cover_stream_index: Some(2),
+            ..Default::default()
+        };
+        let args = build_args(&ToolResolver::default(), &mk(), &meta).unwrap();
+        let joined = args.join(" ");
+        assert!(joined.contains("-map 0:0?"), "{}", joined);
+        assert!(joined.contains("-map 0:2?"), "{}", joined);
+        assert!(joined.contains("-c:v:0 libx265"), "{}", joined);
+        assert!(joined.contains("-c:v:1 copy"), "{}", joined);
+        // 标签必须限定到 v:0，否则会落到 mjpeg 封面流导致 mp4 写头失败
+        assert!(joined.contains("-tag:v:0 hvc1"), "{}", joined);
+        assert!(!joined.contains("-map 0:t?"), "{}", joined);
+    }
+
+    #[test]
+    fn build_args_uses_filter_complex_when_filter_and_cover() {
+        // 封面排在主视频之前（封面 index 0、主视频 index 1）：绝对索引必须指向真正的主视频
+        let meta = MediaMeta {
+            video_stream_index: Some(1),
+            cover_stream_index: Some(0),
+            ..Default::default()
+        };
+        let mut params = mk();
+        params.rot_angle = RotAngle::from_degrees(90);
+        let args = build_args(&ToolResolver::default(), &params, &meta).unwrap();
+        let joined = args.join(" ");
+        assert!(
+            joined.contains("-filter_complex [0:1]transpose=1[v]"),
+            "{}",
+            joined
+        );
+        assert!(joined.contains("-map [v]"), "{}", joined);
+        assert!(joined.contains("-map 0:0?"), "{}", joined);
+        assert!(joined.contains("-c:v:1 copy"), "{}", joined);
+        assert!(!joined.contains("-vf "), "{}", joined);
+    }
+
+    #[test]
+    fn build_args_falls_back_to_attachments_without_cover_index() {
+        // 探测不到封面流（如 MKV 附件型封面）→ 回退 0:t? + -c:t copy
+        let meta = MediaMeta {
+            video_stream_index: Some(0),
+            ..Default::default()
+        };
+        let args = build_args(&ToolResolver::default(), &mk(), &meta).unwrap();
+        let joined = args.join(" ");
+        assert!(joined.contains("-map 0:t?"), "{}", joined);
+        assert!(joined.contains("-c:t copy"), "{}", joined);
     }
 
     #[test]

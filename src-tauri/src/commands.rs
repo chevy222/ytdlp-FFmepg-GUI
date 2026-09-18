@@ -5,7 +5,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 use ytdlp_core::config::AppConfig;
@@ -323,6 +322,8 @@ fn run_probe(app: AppHandle, id: String) {
             });
         }
     }
+    // 解析阶段的临时文件（导出的 Cookie）随任务私有目录一并清掉，避免明文长期驻留 temp/
+    cleanup_on_cancel(&state.paths.task_temp_dir(&id), netscape.as_deref());
     persist(&app);
 }
 
@@ -387,7 +388,7 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
     let state = app.state::<AppState>();
     let cancel = state.register_cancel(&id);
 
-    let (url, cfg, general, resolver, out_dir, template, proxy, netscape, sections) = {
+    let (url, cfg, general, resolver, out_dir, template, proxy, netscape, sections, js_runtime) = {
         let hist = state.history.lock().unwrap();
         let item = hist.get(&id).cloned();
         let Some(item) = item else { return };
@@ -400,8 +401,14 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
         let proxy = state.config.lock().unwrap().network.resolve_proxy(&url);
         let netscape = prepare_cookies(&state, &item);
         let sections = item.sections.clone();
+        // JS 运行时（§3.6 依赖）：托管/配置的 deno 必须显式传给 yt-dlp，
+        // 否则 YouTube 组件会因"没有 JS 运行时"失败（依赖自检却是通过的）
+        let js_runtime = resolver
+            .resolve(ytdlp_core::exec::Tool::Deno)
+            .ok()
+            .map(|p| format!("deno:{}", p.to_string_lossy()));
         (
-            url, cfg, general, resolver, out_dir, template, proxy, netscape, sections,
+            url, cfg, general, resolver, out_dir, template, proxy, netscape, sections, js_runtime,
         )
     };
 
@@ -414,6 +421,7 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
         proxy,
         cookies_file: netscape,
         sections,
+        js_runtime,
     };
 
     let app2 = app.clone();
@@ -436,14 +444,18 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
     let mut outcome = match prog_result {
         Ok(o) => o,
         Err(e) => {
-            finish_download(&app, &id, &cancel, Err(e), &state.paths.temp_dir(), &params);
+            finish_download(&app, &id, Err(e), &params);
             return;
         }
     };
 
     // 后处理（DL-04）
     let mut first = outcome.output_paths.first().cloned();
-    if let Some(path) = &first {
+    if outcome.preexisting {
+        // 重复下载同一 URL：yt-dlp 未覆盖既有文件（--no-overwrites），
+        // 此时不做后处理，避免原地重编码覆盖用户既有文件
+        log_item(&app, &id, "产物已存在（未覆盖），跳过后处理");
+    } else if let Some(path) = &first {
         log_item(&app, &id, "下载完成，开始后处理…");
         update_item(&app, &id, |it| {
             it.status = Status::PostProcessing;
@@ -461,7 +473,7 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
                 outcome.output_paths = vec![final_path];
             }
             Err(e) => {
-                finish_download(&app, &id, &cancel, Err(e), &state.paths.temp_dir(), &params);
+                finish_download(&app, &id, Err(e), &params);
                 return;
             }
         }
@@ -475,25 +487,24 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
             });
         }
     }
-    finish_download(
-        &app,
-        &id,
-        &cancel,
-        Ok(outcome),
-        &state.paths.temp_dir(),
-        &params,
-    );
+    finish_download(&app, &id, Ok(outcome), &params);
 }
 
 fn finish_download(
     app: &AppHandle,
     id: &str,
-    _cancel: &Arc<std::sync::atomic::AtomicBool>,
     result: Result<download::DownloadOutcome, CoreError>,
-    temp_root: &Path,
     params: &DownloadParams,
 ) {
     let state = app.state::<AppState>();
+    // 本次任务的最终产物（回填 path + 抽帧封面共用）
+    let final_path = result
+        .as_ref()
+        .ok()
+        .and_then(|o| o.output_paths.first().cloned());
+    let final_path_str = final_path
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned());
     let final_status = match &result {
         Ok(o) => {
             log_item(
@@ -504,7 +515,6 @@ fn finish_download(
             Status::Done
         }
         Err(CoreError::Cancelled) => {
-            cleanup_on_cancel(params, temp_root);
             log_item(app, id, "已取消，清理残留");
             Status::Canceled
         }
@@ -526,15 +536,17 @@ fn finish_download(
         if final_status == Status::Done {
             it.speed = None;
             it.eta = None;
+            // 产物路径回填（MD-06 / TC-11）：下载产物必须能像本地文件一样
+            // 直接进入转码/合并，否则列表里连"转码"按钮都不会出现。
+            if let Some(p) = &final_path_str {
+                it.path = Some(p.clone());
+                it.file = Some(p.clone());
+            }
         }
     });
     // 下载完成后：用最终产物抽帧更新封面（Done 且有产物路径）
     if final_status == Status::Done {
-        if let Some(out_path) = result
-            .as_ref()
-            .ok()
-            .and_then(|o| o.output_paths.first().cloned())
-        {
+        if let Some(out_path) = final_path {
             let app2 = app.clone();
             let id2 = id.to_string();
             let cache_dir = state.paths.cache_dir();
@@ -551,6 +563,9 @@ fn finish_download(
             });
         }
     }
+    // 任务结束：只清理本任务私有临时目录与本次导出的 Cookie 临时文件
+    // （§3.7/UL-06；旧实现直接删全局 temp/，会连别的并发任务一起删）
+    cleanup_on_cancel(&state.paths.task_temp_dir(id), params.cookies_file.as_deref());
     // 释放并发 slot，启动下一个等待任务（下载/转码/合并共用）
     let next = {
         let mut q = state.queue.lock().unwrap();
@@ -599,8 +614,25 @@ fn resolve_cookies(state: &AppState, item: &MediaItem) -> Option<PathBuf> {
             .and_then(ytdlp_core::cookies::host_from_url)
     })?;
     let store = CookieStore::new(state.paths.cookies_dir());
-    let tmp = state.paths.temp_dir().join(format!("cookies-{}.txt", host));
+    // 导出的 Netscape Cookie 落在**本任务私有目录**：其中可能含 HttpOnly 明文，
+    // 任务结束（finish_download）即随目录删除，不长期留在 temp/
+    let tmp = state
+        .paths
+        .task_temp_dir(&item.id)
+        .join(format!("cookies-{}.txt", host));
     store.export_netscape(&host, &tmp).ok().flatten()
+}
+
+/// 释放并发 slot 并启动下一个等待任务（下载/转码/合并共用）。
+fn release_slot(app: &AppHandle, id: &str) {
+    let state = app.state::<AppState>();
+    let next = {
+        let mut q = state.queue.lock().unwrap();
+        q.finish(id)
+    };
+    if let Some(next_id) = next {
+        launch_next(app, next_id);
+    }
 }
 
 /// 下载/解析共用 cookie 解析（历史名称保留）。
@@ -673,6 +705,9 @@ pub fn start_merge(
         encoder_mode: encoder.unwrap_or_else(|| "auto".into()),
         normalize_audio: norm,
     };
+    // 一次合并 = 一个作业：只把**锚点条目**提交给并发队列，其余参与条目仅标记状态。
+    // 旧实现对每个 id 各提交一次，导致同一合并被并发执行 N 次（同路径互写、产物重复）。
+    let anchor = job.ids[0].clone();
     for id in &job.ids {
         state
             .merge_jobs
@@ -680,19 +715,22 @@ pub fn start_merge(
             .unwrap()
             .insert(id.clone(), job.clone());
     }
+    let outcome = {
+        let mut q = state.queue.lock().unwrap();
+        q.submit(&anchor)
+    };
     for id in &job.ids {
-        let outcome = {
-            let mut q = state.queue.lock().unwrap();
-            q.submit(id)
-        };
-        if outcome == SubmitOutcome::Queued {
-            log_item(&app, id, "已排队，等待并发 slot…");
-        } else {
-            log_item(&app, id, "开始合并…");
-            let app2 = app.clone();
-            let id2 = id.clone();
-            std::thread::spawn(move || run_merge_task(app2, id2));
+        if id != &anchor {
+            log_item(&app, id, "随本批合并作业一起执行…");
         }
+    }
+    if outcome == SubmitOutcome::Queued {
+        log_item(&app, &anchor, "已排队，等待并发 slot…");
+    } else {
+        log_item(&app, &anchor, "开始合并…");
+        let app2 = app.clone();
+        let anchor2 = anchor.clone();
+        std::thread::spawn(move || run_merge_task(app2, anchor2));
     }
     persist(&app);
     Ok(())
@@ -725,14 +763,24 @@ fn today_stamp() -> String {
 fn run_merge_task(app: AppHandle, id: String) {
     let state = app.state::<AppState>();
     let cancel = state.register_cancel(&id);
+    let job = state
+        .merge_jobs
+        .lock()
+        .unwrap()
+        .get(&id)
+        .cloned();
+    let Some(job) = job else {
+        release_slot(&app, &id);
+        return;
+    };
+    // 取消标志共享给全部参与条目：从任意被勾选条目点"取消"都能取消这次合并
+    {
+        let mut cancels = state.cancels.lock().unwrap();
+        for jid in &job.ids {
+            cancels.insert(jid.clone(), cancel.clone());
+        }
+    }
     let (inputs, params) = {
-        let job = state
-            .merge_jobs
-            .lock()
-            .unwrap()
-            .get(&id)
-            .cloned();
-        let Some(job) = job else { return };
         let mut inputs = Vec::new();
         let mut anchor = None;
         {
@@ -751,7 +799,12 @@ fn run_merge_task(app: AppHandle, id: String) {
         let cfg = state.config.lock().unwrap().clone();
         let p = MergeParams {
             inputs,
-            out_dir: default_output_dir(&state, &anchor.unwrap_or_else(|| MediaItem::new(ItemKind::MergeOut, "合并".into()))),
+            out_dir: default_output_dir(
+                &state,
+                &anchor.unwrap_or_else(|| MediaItem::new(ItemKind::MergeOut, "合并".into())),
+            ),
+            // 中间产物一律落在 <exe 同级>\temp\（§3.7），不写进用户输出目录
+            temp_dir: state.paths.temp_dir(),
             filename: job.filename.clone(),
             container: job.container.clone(),
             encoder_mode: job.encoder_mode.clone(),
@@ -764,7 +817,21 @@ fn run_merge_task(app: AppHandle, id: String) {
     };
     if inputs.len() < 2 {
         log_item(&app, &id, "合并输入不足，已取消");
-        let _ = state.merge_jobs.lock().unwrap().remove(&id);
+        {
+            let mut jobs = state.merge_jobs.lock().unwrap();
+            for jid in &job.ids {
+                jobs.remove(jid);
+            }
+        }
+        for jid in &job.ids {
+            update_item(&app, jid, |it| {
+                it.status = Status::Failed;
+                it.error = Some("合并输入不足（需要至少 2 个本地文件）".into());
+            });
+        }
+        // 必须释放 slot，否则并发额度会被这条作业永久占用
+        release_slot(&app, &id);
+        persist(&app);
         return;
     }
     let app2 = app.clone();
@@ -780,37 +847,48 @@ fn run_merge_task(app: AppHandle, id: String) {
         },
         |line| log_item(&app, &id, line),
     );
-    finish_merge(&app, &id, result);
+    finish_merge(&app, &id, &job.ids, result);
 }
 
-/// 合并收尾：原条目恢复、产物作为新条目回列表、释放队列 slot。
-fn finish_merge(app: &AppHandle, id: &str, result: Result<std::path::PathBuf, CoreError>) {
+/// 合并收尾：全部参与条目恢复状态、产物作为新条目回列表、释放队列 slot。
+fn finish_merge(
+    app: &AppHandle,
+    id: &str,
+    ids: &[String],
+    result: Result<std::path::PathBuf, CoreError>,
+) {
     let state = app.state::<AppState>();
-    let (orig_status, final_status) = match &result {
+    let final_status = match &result {
         Ok(out) => {
             log_item(app, id, format!("合并完成，产物回列表：{}", out.display()));
-            (restore_status(app, id), Status::Done)
+            Status::Done
         }
         Err(CoreError::Cancelled) => {
             log_item(app, id, "合并已取消，清理残留");
-            (restore_status(app, id), Status::Canceled)
+            Status::Canceled
         }
         Err(e) => {
             log_item(app, id, format!("合并失败：{}", e));
-            (restore_status(app, id), Status::Failed)
+            Status::Failed
         }
     };
-    update_item(app, id, |it| {
-        it.status = orig_status;
-        it.percent = if final_status == Status::Done {
-            100.0
-        } else {
-            it.percent
-        };
-        if let Err(e) = &result {
-            it.error = Some(e.to_string());
-        }
-    });
+    let err_text = result.as_ref().err().map(|e| e.to_string());
+    // 全部参与条目一起恢复状态（锚点条目另带进度/错误）
+    for jid in ids {
+        let orig = restore_status(app, jid);
+        let is_anchor = jid == id;
+        let err = err_text.clone();
+        let pct = final_status == Status::Done;
+        update_item(app, jid, |it| {
+            it.status = orig;
+            if is_anchor && pct {
+                it.percent = 100.0;
+            }
+            if let Some(e) = &err {
+                it.error = Some(e.clone());
+            }
+        });
+    }
     if let Ok(out) = &result {
         let meta = download::probe_output(&state.resolver(), out).unwrap_or_default();
         let title = out
@@ -827,14 +905,13 @@ fn finish_merge(app: &AppHandle, id: &str, result: Result<std::path::PathBuf, Co
         let _ = app.emit("item:ready", serde_json::json!({ "id": prod.id }));
         let _ = app.emit("list:changed", ());
     }
-    state.merge_jobs.lock().unwrap().remove(id);
-    let next = {
-        let mut q = state.queue.lock().unwrap();
-        q.finish(id)
-    };
-    if let Some(next_id) = next {
-        launch_next(app, next_id);
+    {
+        let mut jobs = state.merge_jobs.lock().unwrap();
+        for jid in ids {
+            jobs.remove(jid);
+        }
     }
+    release_slot(app, id);
     persist(app);
 }
 

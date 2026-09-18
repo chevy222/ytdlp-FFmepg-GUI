@@ -7,7 +7,7 @@
 
 use std::io::BufRead;
 use std::path::Path;
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
@@ -79,6 +79,7 @@ pub fn list_playlist_entries(
         message: e.to_string(),
     })?;
     cmd.arg("-J").arg("--flat-playlist").arg("--no-warnings");
+    push_js_runtime(&mut cmd, resolver);
     if let Some(cf) = cookies_file {
         cmd.arg("--cookies").arg(cf);
     }
@@ -136,6 +137,18 @@ pub struct ProbeFailure {
     pub message: String,
 }
 
+/// 追加 `--js-runtimes deno:<path>`（§3.6 依赖）。
+///
+/// yt-dlp 的 YouTube 组件需要 JS 运行时，默认**只认 PATH 里的 deno**；
+/// 依赖配置/`tools\` 托管目录里的 deno 必须显式传给它，否则即使依赖自检通过，
+/// YouTube 仍会因缺 JS 运行时失败。
+fn push_js_runtime(cmd: &mut Command, resolver: &ToolResolver) {
+    if let Ok(deno) = resolver.resolve(Tool::Deno) {
+        cmd.arg("--js-runtimes");
+        cmd.arg(format!("deno:{}", deno.to_string_lossy()));
+    }
+}
+
 impl std::fmt::Display for ProbeFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.message)
@@ -156,6 +169,7 @@ pub fn probe_url(
         message: e.to_string(),
     })?;
     cmd.arg("-J").arg("--no-warnings");
+    push_js_runtime(&mut cmd, resolver);
     if playlist {
         cmd.arg("--yes-playlist");
     } else {
@@ -212,6 +226,9 @@ pub fn probe_local(
         "json",
         "-show_format",
         "-show_streams",
+        // -show_data 才会输出流级 `extradata`（否则只有 extradata_size）：
+        // 合并直拼判据 MG-02 需要真实 SPS/PPS 十六进制对比
+        "-show_data",
     ])
     .arg(path)
     .stdout(Stdio::piped())
@@ -383,40 +400,46 @@ pub fn parse_ffprobe_json(text: &str) -> MediaMeta {
     let streams = v["streams"].as_array().cloned().unwrap_or_default();
     let mut has_audio = false;
     let mut audio_tracks = 0u32;
-    let mut rotate: Option<i32> = None;
-    for s in &streams {
+    for (pos, s) in streams.iter().enumerate() {
+        // 绝对流索引（映射用；`index` 缺失时按出现顺序回退）
+        let abs_index = s["index"].as_u64().map(|i| i as u32).unwrap_or(pos as u32);
         match s["codec_type"].as_str() {
             Some("video") => {
                 let is_cover = s["disposition"]["attached_pic"].as_u64() == Some(1)
                     || s["disposition"]["attached_pic"].as_str() == Some("1");
                 if is_cover {
-                    // 封面流（attached pic）只标记 has_cover，不参与主视频元数据，
+                    // 封面流（attached pic）只标记 has_cover 与索引，不参与主视频元数据，
                     // 否则 mjpeg 封面会覆盖主视频的高度/编码器/码率/帧率
                     meta.has_cover = true;
+                    if meta.cover_stream_index.is_none() {
+                        meta.cover_stream_index = Some(abs_index);
+                    }
                     continue;
                 }
-                meta.height = s["height"].as_u64().map(|h| h as u32);
-                meta.vcodec = s["codec_name"].as_str().map(str::to_string);
-                meta.fps = s["avg_frame_rate"].as_str().and_then(|r| {
-                    let mut it = r.split('/');
-                    let n: f64 = it.next()?.parse().ok()?;
-                    let d: f64 = it.next()?.parse().ok()?;
-                    if d == 0.0 {
-                        None
-                    } else {
-                        Some(n / d)
-                    }
-                });
-                meta.vbitrate_kbps = s["bit_rate"]
-                    .as_str()
-                    .and_then(|b| b.parse::<f64>().ok())
-                    .map(|b| (b / 1000.0) as u32);
-                meta.extradata = s["extradata"].as_str().map(str::to_string);
-                // 旋转标记（转码/后处理时清零，TC-09）
-                if let Some(tags) = s["tags"].as_object() {
-                    if let Some(r) = tags.get("rotate").and_then(|x| x.as_str()) {
-                        if let Ok(deg) = r.parse::<i32>() {
-                            rotate = Some(deg);
+                // 只取首个主视频流：保证 mapping 用的绝对索引与元数据来自同一条流
+                if meta.video_stream_index.is_none() {
+                    meta.video_stream_index = Some(abs_index);
+                    meta.height = s["height"].as_u64().map(|h| h as u32);
+                    meta.vcodec = s["codec_name"].as_str().map(str::to_string);
+                    meta.fps = s["avg_frame_rate"].as_str().and_then(|r| {
+                        let mut it = r.split('/');
+                        let n: f64 = it.next()?.parse().ok()?;
+                        let d: f64 = it.next()?.parse().ok()?;
+                        if d == 0.0 {
+                            None
+                        } else {
+                            Some(n / d)
+                        }
+                    });
+                    meta.vbitrate_kbps = s["bit_rate"]
+                        .as_str()
+                        .and_then(|b| b.parse::<f64>().ok())
+                        .map(|b| (b / 1000.0) as u32);
+                    meta.extradata = s["extradata"].as_str().map(str::to_string);
+                    // 旋转标记（MD-02 采集；转码是否据此自动纠正见 TC-04 手动旋转约定）
+                    if let Some(tags) = s["tags"].as_object() {
+                        if let Some(r) = tags.get("rotate").and_then(|x| x.as_str()) {
+                            meta.rotate_tag = r.parse::<i32>().ok();
                         }
                     }
                 }
@@ -454,8 +477,7 @@ pub fn parse_ffprobe_json(text: &str) -> MediaMeta {
             }
         }
     }
-    // rotate 记录（旋转角来自文件标记；手动旋转以条目 rot_angle 为准）
-    let _ = rotate;
+    // 无主视频流（如纯音频文件）：不给出映射索引，调用方按 `0:v:0?` 兜底
     meta
 }
 
@@ -613,6 +635,48 @@ mod tests {
         let m = parse_ffprobe_json(json);
         assert!(m.has_cover);
         assert_eq!(m.height, Some(1080));
+    }
+
+    #[test]
+    fn parse_ffprobe_json_stream_index_extradata_rotate() {
+        let json = r#"{
+          "streams": [
+            {"index":0,"codec_type":"video","codec_name":"hevc","height":1080,"extradata":"0a0b0c","tags":{"rotate":"90"}},
+            {"index":1,"codec_type":"audio","codec_name":"aac","sample_rate":"48000","bit_rate":"128000"},
+            {"index":2,"codec_type":"video","codec_name":"mjpeg","disposition":{"attached_pic":1}}
+          ]
+        }"#;
+        let m = parse_ffprobe_json(json);
+        assert_eq!(m.video_stream_index, Some(0));
+        assert_eq!(m.cover_stream_index, Some(2));
+        assert_eq!(m.extradata.as_deref(), Some("0a0b0c"));
+        assert_eq!(m.rotate_tag, Some(90));
+        assert_eq!(m.height, Some(1080));
+        assert_eq!(m.vcodec.as_deref(), Some("hevc"));
+    }
+
+    #[test]
+    fn parse_ffprobe_json_cover_first_main_index_is_second() {
+        // 封面流排在主视频之前时，绝对索引必须指向真正的主视频
+        let json = r#"{"streams":[
+          {"index":0,"codec_type":"video","codec_name":"mjpeg","disposition":{"attached_pic":1}},
+          {"index":1,"codec_type":"video","codec_name":"hevc","height":1080},
+          {"index":2,"codec_type":"audio","codec_name":"aac"}
+        ]}"#;
+        let m = parse_ffprobe_json(json);
+        assert_eq!(m.cover_stream_index, Some(0));
+        assert_eq!(m.video_stream_index, Some(1));
+        assert_eq!(m.height, Some(1080));
+        assert_eq!(m.vcodec.as_deref(), Some("hevc"));
+    }
+
+    #[test]
+    fn parse_ffprobe_json_missing_index_falls_back_to_position() {
+        // 不带 index 字段（老样本）时按出现顺序回退，保证映射不丢
+        let json = r#"{"streams":[{"codec_type":"video","codec_name":"h264","height":720},{"codec_type":"audio","codec_name":"aac"}]}"#;
+        let m = parse_ffprobe_json(json);
+        assert_eq!(m.video_stream_index, Some(0));
+        assert_eq!(m.cover_stream_index, None);
     }
 
     #[test]
