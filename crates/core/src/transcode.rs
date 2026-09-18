@@ -231,8 +231,9 @@ fn build_vf(rot: RotAngle, max_w: u32, max_h: u32) -> Option<String> {
         } else {
             "ih".into()
         };
+        // min() 内逗号在 filtergraph 里是滤镜链分隔符，需用单引号包裹表达式
         parts.push(format!(
-            "scale={}:{}:force_original_aspect_ratio=decrease",
+            "scale='{}':'{}':force_original_aspect_ratio=decrease",
             w, h
         ));
     }
@@ -551,6 +552,8 @@ mod tests {
         assert_eq!(build_vf(RotAngle::ZERO, 0, 0), None);
         let vf = build_vf(RotAngle::from_degrees(90), 1920, 1080).unwrap();
         assert!(vf.starts_with("transpose=1,"), "{}", vf);
+        // min() 内逗号必须被引号包裹，否则 filtergraph 解析为滤镜链分隔符
+        assert!(vf.contains("scale='min(iw,1920)':'min(ih,1080)':force_original_aspect_ratio=decrease"), "{}", vf);
         let vf = build_vf(RotAngle::from_degrees(270), 0, 0).unwrap();
         assert_eq!(vf, "transpose=2");
     }
