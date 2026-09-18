@@ -89,13 +89,29 @@ impl TranscodeParams {
 /// - UP主-标题：本地条目无 UP 主字段，回退为 `{title}`（下载侧由 yt-dlp 模板实现）
 /// - 日期-标题：`{YYYY-MM-DD}-{title}`
 pub fn apply_filename_template(tmpl: &str, title: &str) -> String {
-    let title = sanitize_filename(title);
+    let title = strip_media_ext(&sanitize_filename(title));
     match tmpl {
         "标题+ID" => format!("{}-{}", title, id_hint(title.as_str())),
         "日期-标题" => format!("{}-{}", today(), title),
         "UP主-标题" => title,
         _ => title,
     }
+}
+
+/// 去掉常见媒体扩展名（本地条目标题带 .mp4 时避免输出 "x.mp4.mp4"）。
+fn strip_media_ext(name: &str) -> String {
+    const MEDIA_EXTS: &[&str] = &[
+        "mp4", "mkv", "mov", "avi", "wmv", "flv", "webm", "m4v", "mpg", "mpeg", "ts", "m2ts",
+        "3gp", "rm", "rmvb", "vob", "mts", "m4a", "aac", "mp3", "flac", "wav", "ogg", "opus",
+    ];
+    let p = std::path::Path::new(name);
+    if let (Some(stem), Some(ext)) = (p.file_stem(), p.extension()) {
+        let e = ext.to_string_lossy().to_lowercase();
+        if MEDIA_EXTS.contains(&e.as_str()) {
+            return stem.to_string_lossy().into_owned();
+        }
+    }
+    name.to_string()
 }
 
 /// 文件名清洗（Windows 非法字符 / 截断）。
@@ -473,7 +489,10 @@ mod tests {
 
     #[test]
     fn template_pure_title() {
-        assert_eq!(apply_filename_template("纯标题", "a/b:c.mp4"), "a_b_c.mp4");
+        // 本地条目标题带扩展名 → 输出不带双扩展名
+        assert_eq!(apply_filename_template("纯标题", "a/b:c.mp4"), "a_b_c");
+        assert_eq!(apply_filename_template("纯标题", "你好世界.mp4"), "你好世界");
+        assert_eq!(apply_filename_template("纯标题", "无扩展名"), "无扩展名");
     }
 
     #[test]
