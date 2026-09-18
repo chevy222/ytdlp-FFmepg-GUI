@@ -11,14 +11,49 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 };
 use webview2_com::GetCookiesCompletedHandler;
 use windows::core::{Interface, PCWSTR, PWSTR};
+use windows::Win32::UI::WindowsAndMessaging::{
+    DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+};
 
 use ytdlp_core::cookies::CookieEntry;
+
+/// 等 CookieManager 回调的上限。
+/// 必须小于调用方（`handle_login_done`）的 10s 兜底，否则主线程先卡住、调用方的超时形同虚设。
+const COOKIE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// 带截止时间的消息泵等待，替代 `webview2_com::wait_with_pump`。
+///
+/// WebView2 的异步回调要靠 STA 消息泵投递，所以不能裸阻塞 `recv()`；但
+/// `wait_with_pump` **没有超时**——回调不来（webview 正在销毁、COM 出问题）就永远泵下去，
+/// 而这段代码跑在**主线程**（`with_webview` 的回调里），一旦卡住就是"窗口空白 + 点 × 没反应"
+/// 的整机冻结。这里自己泵并设上限，超时返回 None，调用方回退到 URL 携带的 cookie。
+fn wait_with_pump_timeout<T>(rx: &mpsc::Receiver<T>, timeout: std::time::Duration) -> Option<T> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Ok(v) = rx.try_recv() {
+            return Some(v);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        unsafe {
+            let mut msg = MSG::default();
+            if PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            } else {
+                // 没有消息时空转会烧 CPU，睡 2ms 再探
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+    }
+}
 
 /// 同步抓取某 host 域下全部 Cookie（含 HttpOnly）。
 ///
 /// 走 WebView2 CookieManager.GetCookies（COM，非 JS document.cookie，因此含 HttpOnly）。
-/// GetCookies 异步完成，回调在 STA 消息泵执行；这里用 `wait_with_pump` 泵消息等待，
-/// 不能裸阻塞 `recv()`（否则回调永远不执行，死锁）。
+/// GetCookies 异步完成，回调在 STA 消息泵执行；这里用 `wait_with_pump_timeout` 泵消息等待，
+/// 不能裸阻塞 `recv()`（否则回调永远不执行，死锁），也不能无限泵（见该函数注释）。
 pub fn fetch_cookies_com(webview: &PlatformWebview, host: &str) -> Option<Vec<CookieEntry>> {
     let controller = webview.controller();
     let core = unsafe { controller.CoreWebView2().ok()? };
@@ -59,7 +94,7 @@ pub fn fetch_cookies_com(webview: &PlatformWebview, host: &str) -> Option<Vec<Co
             .GetCookies(PCWSTR(uri_wide.as_ptr()), &handler)
             .ok()?;
     }
-    webview2_com::wait_with_pump(rx).ok()?
+    wait_with_pump_timeout(&rx, COOKIE_WAIT_TIMEOUT).flatten()
 }
 
 /// 读取 Cookie 的宽字符串属性（Name/Value/Domain/Path）。

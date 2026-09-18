@@ -5,9 +5,21 @@
 //! - Windows 上优先经 WebView2 CookieManager（COM）抓取含 HttpOnly 的 Cookie；失败回退 URL 携带的 cookie
 //! - 保存后关闭登录窗并自动重解析 NeedLogin 条目
 //! - 三种关闭方式：右上角 ×、顶部提示条内"关闭"、Esc 键（都跳本地 close URL，由 Rust 关窗）
-//! - **保存与关闭回调必须放到子线程执行**：`on_page_load` 运行在主线程，而
-//!   `with_webview` / 窗口关闭都要回到主线程执行，在主线程里原地等待会自锁 ——
-//!   表现为登录窗卡死、点 × 无反应。见 `open_login` 内注释。
+//!
+//! **两条硬约束（违反就复现"新窗口空白 + 整机卡死、关都关不掉"）**：
+//! 1. 创建窗口不能发生在主线程/同步命令里。Tauri 官方文档（`WebviewWindowBuilder::new`）：
+//!    *On Windows, this function deadlocks when used in a synchronous command and event handlers…
+//!    You should use `async` commands and separate threads when creating windows.*
+//!    所以 `open_login_site` / `relogin_item` 必须带 `#[tauri::command(async)]`。
+//!    一旦死锁，新窗口只创建了 HWND、从没绘制过（= 空白），WM_CLOSE 也无人处理（= 点 × 没用）。
+//! 2. 关闭/保存的嗅探必须走 `on_navigation`（导航**开始**即触发，返回 false 取消导航），
+//!    不能用 `on_page_load` —— 后者要等页面加载成功，而 `http://127.0.0.1/...` 上没有任何
+//!    服务在监听，加载必然失败，于是"关闭"按钮在空白页面前完全失效。
+//!
+//! 另外 `on_page_load` 与 `on_navigation` 回调都在主线程执行，任何"就地等主线程"的调用
+//! 都会自锁（`with_webview` + 泵消息尤其危险），所以这里的保存流程一律丢到子线程。
+
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -19,6 +31,10 @@ use crate::commands::save_cookies;
 /// 循环；换成标准桌面 Chrome UA 以提高兼容性。
 pub const LOGIN_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+/// 开窗进行中标志：开窗已被移到 async 命令的线程上，这里再挡一道重复点击
+/// （同 label 建两次会报错，用户看不出为什么）。
+static LOGIN_OPENING: AtomicBool = AtomicBool::new(false);
 
 /// 已知支持内置登录的站点 → 登录 URL。
 pub fn login_url_for_host(host: &str) -> Option<String> {
@@ -37,14 +53,27 @@ pub fn login_url_for_host(host: &str) -> Option<String> {
 }
 
 /// 打开登录窗。
+///
+/// **调用方必须保证不在主线程**（用 `#[tauri::command(async)]` 的 async 命令，
+/// 或自己 `std::thread::spawn`），否则 Windows 上会死锁 —— 见文件头注释。
 pub fn open_login(app: &AppHandle, host: &str, url: &str) -> Result<(), String> {
     // 已存在则聚焦
     if let Some(win) = app.get_webview_window("ytdlp-login") {
         let _ = win.set_focus();
         return Ok(());
     }
+    if LOGIN_OPENING.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    let result = build_login_window(app, host, url);
+    LOGIN_OPENING.store(false, Ordering::SeqCst);
+    result
+}
+
+fn build_login_window(app: &AppHandle, host: &str, url: &str) -> Result<(), String> {
     let script = login_inject_script();
-    let host2 = host.to_string();
+    let app_for_nav = app.clone();
+    let host_for_nav = host.to_string();
     WebviewWindowBuilder::new(
         app,
         "ytdlp-login",
@@ -56,30 +85,38 @@ pub fn open_login(app: &AppHandle, host: &str, url: &str) -> Result<(), String> 
     .center()
     .user_agent(LOGIN_USER_AGENT)
     .initialization_script(&script)
-    .on_page_load(move |webview, payload| {
-        let url = payload.url().to_string();
-        // 注入脚本里的"关闭"按钮 / Esc → 关窗。close 只是投递消息到事件循环，
-        // 不会阻塞，可以就地调用。
-        if url.contains("ytdlp-login-close") {
-            let _ = webview.close();
-            return;
+    // close / done 两个"魔法 URL"的嗅探走导航开始事件：即使 127.0.0.1 上没人监听
+    // （导航必然失败）也能触发，返回 false 顺手取消这次无意义的导航。
+    .on_navigation(move |url| {
+        let target = url.as_str();
+        if target.contains("ytdlp-login-close") {
+            let app = app_for_nav.clone();
+            std::thread::spawn(move || close_login_window(&app));
+            return false;
         }
-        if url.contains("ytdlp-login-done") {
-            // 本回调运行在主线程；handle_login_done 内部的 with_webview 需要回到
-            // 主线程执行并等待结果 —— 就地调用会形成"主线程等自己"的自锁，
-            // 登录窗随即永久卡死（点 × 无反应）。必须丢到子线程去等。
-            let app = webview.app_handle().clone();
-            let host = host2.clone();
+        if target.contains("ytdlp-login-done") {
+            let app = app_for_nav.clone();
+            let host = host_for_nav.clone();
+            let done = target.to_string();
+            // 回调在主线程：保存流程（with_webview + 泵消息、写 Cookie、关窗）一律下放子线程
             std::thread::spawn(move || {
                 if let Some(win) = app.get_webview_window("ytdlp-login") {
-                    handle_login_done(&win, &host, &url);
+                    handle_login_done(&win, &host, &done);
                 }
             });
+            return false;
         }
+        true
     })
     .build()
     .map_err(|e| format!("打开登录窗口失败：{}", e))?;
     Ok(())
+}
+
+fn close_login_window(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("ytdlp-login") {
+        let _ = win.close();
+    }
 }
 
 fn handle_login_done(win: &tauri::WebviewWindow, host: &str, url: &str) {
@@ -93,7 +130,7 @@ fn handle_login_done(win: &tauri::WebviewWindow, host: &str, url: &str) {
             let _ = tx.send(crate::login_win::fetch_cookies_com(&webview, &host_owned));
         });
         // 兜底超时：CookieManager 回调不返回时不要永久挂起，直接走下面的
-        // URL 携带 cookie 回退路径。
+        // URL 携带 cookie 回退路径。（主线程侧的泵另有截止时间，见 login_win.rs）
         let got = rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .ok()

@@ -217,6 +217,7 @@ ytdlp-FFmpeg-GUI --url <URL> [--url <URL> ...] [--cookies <path>] [--dir <path>]
 16. **托管 `tools\` 目录只能当"回退候选"，不能占用显式配置位**：`ToolResolver::with_tools_dir` 只登记目录；`resolve` 顺序为 显式路径 → 托管目录 → 系统 PATH，托管文件不存在必须继续走 `find_in_path`。一旦把 `tools\<工具名>` 塞进"已配置路径"位，首次运行时空的 `tools\` 会让四个工具全部报"未找到"（而 PATH 里明明有），`--js-runtimes deno:<path>` 也会因此拿不到 PATH 里的 deno。
 17. **三级命中位置（`ToolSource`）是「更新」的判据**：显式路径 / 托管副本可就地更新，命中 PATH 只能提示手动更新。所以 `resolve_with_source` 的每一级判定必须与解析结果严格对应，不要把"用户填的路径恰好也在 PATH 里"当成 PATH 来源。
 18. **ffmpeg/ffprobe 没有版本号可比**：BtbN 是滚动发布（`releases/latest` 的 tag 恒为 `latest`），"有没有新版本"只能靠远端产物 SHA-256 与 `tools/installed.json` 里的安装指纹比对；判不准时必须落到"更新一次"，不能反过来误报"已是最新"。
+19. **登录窗三处线程纪律**：① `WebviewWindowBuilder::new` 在 Windows 的同步命令/主线程里会死锁（官方文档明示），两个登录入口必须是 async 命令并把建窗放进 `spawn_blocking`；② close/done 魔法 URL 必须在 `on_navigation`（导航开始即触发、可取消）嗅探，不能用页面加载事件——`http://127.0.0.1/...` 上没有服务监听，加载必然失败，回调永远不来，"关闭"按钮随之失效；③ `on_navigation`/页面加载回调都在主线程执行，保存/关窗流程一律丢子线程；`with_webview` 里的 COM 等待必须带截止时间，且小于调用方兜底超时（见 `login_win.rs::wait_with_pump_timeout`）。
 
 ## 12. 未实现项（不在当前代码中）
 

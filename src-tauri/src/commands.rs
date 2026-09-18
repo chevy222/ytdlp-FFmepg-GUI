@@ -1462,10 +1462,31 @@ pub fn retry_item(app: AppHandle, id: String) -> CmdResult<()> {
     Ok(())
 }
 
+/// 建窗必须在主线程之外完成。
+///
+/// `WebviewWindowBuilder::new` 在 Windows 上会把建窗请求投递给主线程事件循环并等待结果；
+/// 而同步命令本身跑在主线程，于是"主线程等自己"——窗口只建出 HWND、从没绘制过
+/// （空白页），连 WM_CLOSE 都没人处理（点 × 关不掉）。官方 API 文档对此有明确警告。
+/// 所以两个登录入口都定义成 async 命令，并把建窗放进 `spawn_blocking`。
+async fn open_login_off_main_thread(
+    app: AppHandle,
+    host: String,
+    unsupported_msg: String,
+) -> CmdResult<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let login_url = login::login_url_for_host(&host)
+            .ok_or_else(|| unsupported_msg.replace("{host}", &host))?;
+        login::open_login(&app, &host, &login_url).map_err(err_string)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("登录窗口启动失败：{e}"))?
+}
+
 #[tauri::command]
-pub fn relogin_item(app: AppHandle, id: String) -> CmdResult<()> {
-    let state = app.state::<AppState>();
+pub async fn relogin_item(app: AppHandle, id: String) -> CmdResult<()> {
     let host = {
+        let state = app.state::<AppState>();
         let hist = state.history.lock().unwrap();
         let item = hist.get(&id).ok_or("条目不存在")?;
         item.host.clone().or_else(|| {
@@ -1475,11 +1496,12 @@ pub fn relogin_item(app: AppHandle, id: String) -> CmdResult<()> {
         })
     };
     let host = host.ok_or("无法确定登录站点")?;
-    let login_url = login::login_url_for_host(&host).ok_or_else(|| {
-        format!("站点 {host} 不支持内置登录：请在设置-Cookie 中为该站点添加 Cookie 后重试")
-    })?;
-    login::open_login(&app, &host, &login_url).map_err(err_string)?;
-    Ok(())
+    open_login_off_main_thread(
+        app,
+        host,
+        "站点 {host} 不支持内置登录：请在设置-Cookie 中为该站点添加 Cookie 后重试".into(),
+    )
+    .await
 }
 
 /// 从设置页直接打开某站点的内置登录窗（不依赖列表条目状态）。
@@ -1491,12 +1513,13 @@ pub fn relogin_item(app: AppHandle, id: String) -> CmdResult<()> {
 /// 传站点级域名（如 `bilibili.com`）即可：`cookie_candidates` 会按
 /// "精确 host → 父域 → www 子域" 回退，条目侧的 `www.bilibili.com` 一样命中。
 #[tauri::command]
-pub fn open_login_site(app: AppHandle, host: String) -> CmdResult<()> {
-    let login_url = login::login_url_for_host(&host).ok_or_else(|| {
-        format!("站点 {host} 不支持内置登录：请在下方的 Cookie 列表中直接导入")
-    })?;
-    login::open_login(&app, &host, &login_url).map_err(err_string)?;
-    Ok(())
+pub async fn open_login_site(app: AppHandle, host: String) -> CmdResult<()> {
+    open_login_off_main_thread(
+        app,
+        host,
+        "站点 {host} 不支持内置登录：请在下方的 Cookie 列表中直接导入".into(),
+    )
+    .await
 }
 
 // ---------- 配置 ----------
