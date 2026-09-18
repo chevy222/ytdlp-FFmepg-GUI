@@ -1013,6 +1013,10 @@ fn finish_transcode(
         }
         Err(e) => {
             log_item(app, id, format!("转码失败：{}", e));
+            // 失败后重新解析一次，刷新列表中的源元数据（probe 修复后旧缓存可自动纠正）
+            let app2 = app.clone();
+            let id2 = id.to_string();
+            std::thread::spawn(move || run_probe(app2, id2));
             (restore_status(app, id), Status::Failed)
         }
     };

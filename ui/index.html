@@ -359,9 +359,10 @@ function qualityLine(m){
   if(m.container)p.push(m.container);
   if(m.height)p.push(m.height+'P');
   if(m.vcodec)p.push(m.vcodec);
-  if(m.vbitrate_kbps)p.push(Math.round(m.vbitrate_kbps/1000)+'Mbps');
+  if(m.vbitrate_kbps)p.push(m.vbitrate_kbps>=1000?(m.vbitrate_kbps/1000).toFixed(1)+'Mbps':m.vbitrate_kbps+'k');
   if(m.fps)p.push(Math.round(m.fps)+'fps');
   if(m.acodec)p.push(m.acodec);
+  if(m.sample_rate)p.push(m.sample_rate>=1000?(m.sample_rate/1000).toFixed(1).replace(/\.0$/,'')+'kHz':m.sample_rate+'Hz');
   if(m.abitrate_kbps)p.push(m.abitrate_kbps+'k');
   if(m.audio_tracks)p.push(m.audio_tracks+'轨');
   if(m.audio_volume && m.audio_volume.max_volume_db!=null)p.push(m.audio_volume.max_volume_db.toFixed(1)+'dB');
