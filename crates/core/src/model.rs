@@ -267,8 +267,6 @@ impl MediaMeta {
         }
         if let Some(c) = self.audio_channels {
             parts.push(format!("{}声道", c));
-        } else if let Some(t) = self.audio_tracks {
-            parts.push(format!("{}轨", t));
         }
         if let Some(v) = self.audio_volume.max_volume_db {
             parts.push(format!("{:.1}dB", v));
@@ -673,6 +671,7 @@ mod tests {
             acodec: Some("AAC".into()),
             abitrate_kbps: Some(320),
             audio_tracks: Some(2),
+            audio_channels: Some(2),
             audio_volume: AudioVolume {
                 max_volume_db: Some(-8.2),
                 ..Default::default()
@@ -684,7 +683,7 @@ mod tests {
         let line = meta.quality_line();
         assert_eq!(
             line,
-            "MP4 · 2160P · HEVC · 12Mbps · 60fps · AAC · 320k · 2轨 · -8.2dB · 05:32 · 34.0MB"
+            "MP4 · 2160P · HEVC · 12Mbps · 60fps · AAC · 320k · 2声道 · -8.2dB · 05:32 · 34.0MB"
         );
     }
 

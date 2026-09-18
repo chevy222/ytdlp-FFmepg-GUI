@@ -368,7 +368,7 @@ function qualityLine(m){
   if(m.acodec)p.push(m.acodec);
   if(m.sample_rate)p.push(m.sample_rate>=1000?(m.sample_rate/1000).toFixed(1).replace(/\.0$/,'')+'kHz':m.sample_rate+'Hz');
   if(m.abitrate_kbps)p.push(m.abitrate_kbps+'k');
-  if(m.audio_channels)p.push(m.audio_channels+'声道'); else if(m.audio_tracks)p.push(m.audio_tracks+'轨');
+  if(m.audio_channels)p.push(m.audio_channels+'声道');
   if(m.audio_volume && m.audio_volume.max_volume_db!=null)p.push(m.audio_volume.max_volume_db.toFixed(1)+'dB');
   if(m.duration_secs!=null){const d=Math.floor(m.duration_secs);p.push(String(Math.floor(d/60)).padStart(2,'0')+':'+String(d%60).padStart(2,'0'));}
   if(m.size_bytes!=null)p.push(humanSize(m.size_bytes));
