@@ -866,6 +866,7 @@ function renderSetPage(){
 
   let h='';
   if(curPage==='deps'){
+    h+='<div class="set-hd">工具链（查找顺序：设置路径 → tools\\ → 系统 PATH；「下载」装到 tools\\ 并记住路径，「更新」只更新当前生效的那一份）</div>';
     h+=toolRow('yt_dlp_path','yt-dlp 路径');
     h+=toolRow('ffmpeg_path','ffmpeg 路径');
     h+=toolRow('ffprobe_path','ffprobe 路径');
@@ -961,20 +962,22 @@ function bindSetEvents(){
       INVOKE('cancel_tool_download',{tool}).then(()=>toast('已请求取消下载')).catch(err=>toast(err));
       return;
     }
-    const force=b.dataset.act==='tool-up';
+    const isUpdate=b.dataset.act==='tool-up';
     const row=b.closest('.toolrow');
     row.querySelectorAll('.btn').forEach(x=>{x.disabled=true;});
     b.disabled=false;
     b.dataset.act='tool-cancel';
     b.classList.add('danger');
     b.textContent='取消';
-    INVOKE('download_tool',{tool,force})
-      .then(p=>{
-        // 下载完成后把 tools/ 下的路径写回配置，输入框自动显示
-        S.config.dependencies=S.config.dependencies||{};
-        S.config.dependencies[tool]=p;
-        INVOKE('save_config',{config:S.config}).catch(()=>{});
-        toast((force?'更新':'下载')+'完成：'+p);
+    INVOKE('download_tool',{tool,update:isUpdate})
+      .then(r=>{
+        // 「下载」= 装到 tools\ 并把该路径写回设置（之后优先用这份）；「更新」只换文件内容，不改路径
+        if(!isUpdate){
+          S.config=S.config||{}; S.config.dependencies=S.config.dependencies||{};
+          S.config.dependencies[tool]=r.path;
+          INVOKE('save_config',{config:S.config}).catch(()=>{});
+        }
+        toast(r.message||('完成：'+r.path));
         renderSetPage();refreshDeps();
       })
       .catch(err=>{toast(err);renderSetPage();refreshDeps();});

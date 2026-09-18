@@ -4,11 +4,12 @@
 //! 关键状态变更才持久化 history.json（进度高频更新只 emit 不落盘）。
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 use ytdlp_core::config::AppConfig;
-use ytdlp_core::exec::ToolResolver;
+use ytdlp_core::exec::{ToolResolver, ToolSource};
 use ytdlp_core::cookies::CookieStore;
 use ytdlp_core::download::{
     self, cleanup_on_cancel, post_process, probe_output, run_download, DownloadParams,
@@ -17,7 +18,7 @@ use ytdlp_core::model::{ItemKind, MediaItem, Status};
 use ytdlp_core::config::NetworkConfig;
 use ytdlp_core::merge::{self, MergeParams};
 use ytdlp_core::transcode::{self, TranscodeParams};
-use ytdlp_core::tool_download::{ToolDownloader, ToolKind};
+use ytdlp_core::tool_download::{installed_matches, InstalledIndex, ToolDownloader, ToolKind};
 use ytdlp_core::probe::{self, ProbeErrorKind};
 use ytdlp_core::worker::SubmitOutcome;
 use ytdlp_core::{transition, CoreError};
@@ -35,22 +36,43 @@ pub fn probe_hw_encoders(app: AppHandle) -> CmdResult<serde_json::Value> {
     Ok(serde_json::json!({ "qsv": hw.qsv, "nvenc": hw.nvenc, "amf": hw.amf }))
 }
 
-/// 工具链托管下载/更新（依赖页）：下载到 <exe 同级>\tools\，SHA-256 校验后原子激活。
-/// 进度通过 "tool:progress" 事件上报。`force=true` 覆盖已存在的工具。
-/// 下载中前端按钮变"取消"，点击调 cancel_tool_download。
+/// 依赖页「下载 / 更新」结果。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ToolInstallResult {
+    /// 本次是否真的下载并安装了文件（false = 已有托管副本 / 已是最新）
+    pub updated: bool,
+    /// 该工具当前生效的路径（「下载」成功后前端写回设置输入框）
+    pub path: String,
+    /// 安装后（或当前）的版本号；工具不报版本时为 None
+    pub version: Option<String>,
+    /// 给用户看的一句话结论
+    pub message: String,
+}
+
+/// 「下载 / 更新」的执行计划。
+enum InstallPlan {
+    /// 不需要下载，直接把结论返回前端
+    Done(ToolInstallResult),
+    /// 需要下载并安装到该路径
+    Download(PathBuf),
+}
+
+/// 依赖页「下载 / 更新」（进度经 `tool:progress` 上报，下载中前端按钮变"取消"）。
+///
+/// - `update=false`（下载）：固定装到 `<exe 同级>\tools\`；已有托管副本就直接返回
+///   （不重复下载）。成功后前端把路径写回设置，之后优先用这份。
+/// - `update=true`（更新）：只更新**当前生效的那一份**——设置里填的路径或 `tools\`
+///   托管副本；当前用的是系统 PATH 里的（不归本程序管）则提示用户自己更新。
+///   更新前先判断有没有新版本：yt-dlp / deno 比 release tag，ffmpeg / ffprobe 比
+///   "上次安装时的远端产物指纹"（`tools/installed.json`）；已是最新就不下载。
 #[tauri::command]
 pub async fn download_tool(
     app: AppHandle,
     state: State<'_, AppState>,
     tool: String,
-    force: bool,
-) -> CmdResult<String> {
-    let kind = ToolKind::from_config_key(&tool)
-        .ok_or_else(|| format!("未知工具键：{tool}"))?;
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_default();
+    update: bool,
+) -> CmdResult<ToolInstallResult> {
+    let kind = ToolKind::from_config_key(&tool).ok_or_else(|| format!("未知工具键：{tool}"))?;
     // 注册取消标志（前端点"取消"置 true）。同一工具不允许并发下载：
     // 重复注册会覆盖旧标志，导致第一次下载的"取消"指向失效
     let cancel_key = format!("tool-dl-{tool}");
@@ -58,29 +80,146 @@ pub async fn download_tool(
         return Err("该工具正在下载中".into());
     }
     let flag = state.register_cancel(&cancel_key);
-    let dl = ToolDownloader::new(
-        exe_dir.join("tools"),
-        exe_dir.join("temp").join("tool_dl"),
-    )
-    .with_cancel(Some(flag));
-    let app2 = app.clone();
-    let t = tool.clone();
-    let cancel_key2 = cancel_key.clone();
-    let path = tauri::async_runtime::spawn_blocking(move || {
+    let tools_dir = state.paths.tools_dir();
+    let dl = ToolDownloader::new(tools_dir.clone(), state.paths.temp_dir().join("tool_dl"));
+    let ctx = ToolInstallCtx {
+        app: &app,
+        state: &*state,
+        dl: &dl,
+        tools_dir: tools_dir.as_path(),
+        key: tool.as_str(),
+    };
+
+    let outcome = run_tool_install(&ctx, kind, update, &flag).await;
+    // 无论成功/失败/取消（含"未找到""已是最新"这类早退）都清理取消标志，
+    // 否则注册表条目泄漏，之后每次点按钮都报"该工具正在下载中"
+    state.cancels.lock().unwrap().remove(&cancel_key);
+    outcome
+}
+
+/// 「下载 / 更新」共用的调用上下文（免得把同一批参数串成一长排）。
+struct ToolInstallCtx<'a> {
+    app: &'a AppHandle,
+    state: &'a AppState,
+    dl: &'a ToolDownloader,
+    tools_dir: &'a Path,
+    /// 配置键名（`yt_dlp_path` 等）：进度事件与安装指纹都用它作标识
+    key: &'a str,
+}
+
+async fn run_tool_install(
+    ctx: &ToolInstallCtx<'_>,
+    kind: ToolKind,
+    update: bool,
+    cancel: &Arc<AtomicBool>,
+) -> CmdResult<ToolInstallResult> {
+    let dest = match plan_tool_install(ctx, kind, update)? {
+        InstallPlan::Done(done) => return Ok(done),
+        InstallPlan::Download(dest) => dest,
+    };
+    let app2 = ctx.app.clone();
+    let dl2 = ctx.dl.clone().with_cancel(Some(cancel.clone()));
+    let key2 = ctx.key.to_string();
+    let dest2 = dest.clone();
+    let joined = tauri::async_runtime::spawn_blocking(move || {
         let mut prog = |phase: String, pct: f32| {
             let _ = app2.emit(
                 "tool:progress",
-                serde_json::json!({ "tool": t.clone(), "phase": phase, "percent": pct }),
+                serde_json::json!({ "tool": key2, "phase": phase, "percent": pct }),
             );
         };
-        dl.download(kind, force, &mut prog)
+        let done = dl2.download(kind, &dest2, &mut prog)?;
+        let version = ytdlp_core::exec::tool_version_at(kind.tool(), &done.path);
+        Ok::<_, String>((done, version))
     })
     .await
-    .map_err(|e| format!("下载任务异常：{e}"));
-    // 无论成功/失败/取消都清理取消标志（原先失败路径提前 return 会泄漏注册表条目）
-    state.cancels.lock().unwrap().remove(&cancel_key2);
-    let path = path??;
-    Ok(path.to_string_lossy().into_owned())
+    .map_err(|e| format!("下载任务异常：{e}"))?;
+    let (done, version) = joined?;
+
+    // 记下这次安装的远端产物指纹：下次「更新」靠它判断有没有新版本
+    if let Some(sha) = &done.remote_sha256 {
+        let mut index = InstalledIndex::load(ctx.tools_dir);
+        index.record(ctx.key, &done.path, sha);
+        if let Err(e) = index.save(ctx.tools_dir) {
+            eprintln!("{e}");
+        }
+    }
+
+    let name = kind.tool().name();
+    let vs = version
+        .as_deref()
+        .map(|v| format!("（{v}）"))
+        .unwrap_or_default();
+    let verb = if update { "已更新到" } else { "已安装到" };
+    Ok(ToolInstallResult {
+        updated: true,
+        path: done.path.to_string_lossy().into_owned(),
+        version,
+        message: format!("{name}{vs}{verb} {}", done.path.display()),
+    })
+}
+
+/// 下载 / 更新的前置判断（联网的只有"查版本号"或"查产物指纹"一步）。
+fn plan_tool_install(
+    ctx: &ToolInstallCtx<'_>,
+    kind: ToolKind,
+    update: bool,
+) -> CmdResult<InstallPlan> {
+    let name = kind.tool().name();
+    if !update {
+        // 下载：固定落 tools\，已有托管副本就不重复下
+        let dest = ctx.dl.target_path(kind);
+        if ctx.dl.is_installed(kind) {
+            let version = ytdlp_core::exec::tool_version_at(kind.tool(), &dest);
+            let vs = version
+                .as_deref()
+                .map(|v| format!("（{v}）"))
+                .unwrap_or_default();
+            return Ok(InstallPlan::Done(ToolInstallResult {
+                updated: false,
+                path: dest.to_string_lossy().into_owned(),
+                version,
+                message: format!("{name}{vs}已在 tools\\ 中；如需检查新版本请点\"更新\""),
+            }));
+        }
+        return Ok(InstallPlan::Download(dest));
+    }
+
+    // 更新：只动"当前生效的那一份"
+    let resolver = ctx.state.resolver();
+    let (target, source) = resolver
+        .resolve_with_source(kind.tool())
+        .map_err(|e| format!("{e}。请先点\"下载\"装一份托管副本，或在设置里填写路径"))?;
+    if source == ToolSource::Path {
+        return Err(format!(
+            "{name} 当前用的是系统 PATH 里的 {}：请在系统里手动更新，或点\"下载\"在本程序 tools\\ 目录装一份托管副本（之后就能在这里更新）",
+            target.display()
+        ));
+    }
+
+    let local = ytdlp_core::exec::tool_version_at(kind.tool(), &target);
+    // 有版本号的（yt-dlp / deno）比版本号；没有版本号的（ffmpeg / ffprobe 滚动构建）比产物指纹
+    let unchanged = match (&local, ctx.dl.latest_version(kind)) {
+        (Some(l), Some(remote)) => ytdlp_core::exec::versions_equal(l, &remote),
+        _ => {
+            let remote = ctx.dl.remote_sha(kind);
+            let index = InstalledIndex::load(ctx.tools_dir);
+            installed_matches(index.get(ctx.key), &target, remote.as_deref())
+        }
+    };
+    if unchanged {
+        let vs = local
+            .as_deref()
+            .map(|v| format!("（{v}）"))
+            .unwrap_or_default();
+        return Ok(InstallPlan::Done(ToolInstallResult {
+            updated: false,
+            path: target.to_string_lossy().into_owned(),
+            version: local,
+            message: format!("{name}{vs}已是最新，无需更新"),
+        }));
+    }
+    Ok(InstallPlan::Download(target))
 }
 
 /// 取消进行中的工具下载（前端点"取消"按钮）。

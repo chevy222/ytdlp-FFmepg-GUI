@@ -47,6 +47,17 @@ impl Tool {
     }
 }
 
+/// 工具来自三级回退中的哪一级（「更新」据此判断能不能就地更新）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolSource {
+    /// 设置里显式填写的路径
+    Configured,
+    /// `<exe 同级>\tools\` 托管副本
+    Managed,
+    /// 系统 PATH 里的（不归本程序管，更新应让用户自己动手）
+    Path,
+}
+
 /// 工具解析器：按 显式路径 → 托管目录 → PATH 三级解析。
 #[derive(Debug, Clone, Default)]
 pub struct ToolResolver {
@@ -77,8 +88,13 @@ impl ToolResolver {
         self
     }
 
-    /// 解析工具可执行文件路径：显式路径 → 托管目录 → 系统 PATH。
+    /// 解析工具可执行文件路径（不关心来源）。
     pub fn resolve(&self, tool: Tool) -> crate::Result<PathBuf> {
+        self.resolve_with_source(tool).map(|(p, _)| p)
+    }
+
+    /// 解析工具可执行文件路径 + 命中来源：显式路径 → 托管目录 → 系统 PATH。
+    pub fn resolve_with_source(&self, tool: Tool) -> crate::Result<(PathBuf, ToolSource)> {
         let configured = match tool {
             Tool::YtDlp => self.yt_dlp.clone(),
             Tool::Ffmpeg => self.ffmpeg.clone(),
@@ -87,7 +103,7 @@ impl ToolResolver {
         };
         if let Some(p) = configured {
             if p.is_file() {
-                return Ok(p);
+                return Ok((p, ToolSource::Configured));
             }
             // 显式指定却不存在：明确报错（用户需要知道自己填错了），不回退
             return Err(CoreError::Io(std::io::Error::new(
@@ -100,15 +116,17 @@ impl ToolResolver {
         if let Some(dir) = &self.tools_dir {
             let cand = dir.join(tool.exe_name());
             if cand.is_file() {
-                return Ok(cand);
+                return Ok((cand, ToolSource::Managed));
             }
         }
-        find_in_path(tool.exe_name()).ok_or_else(|| {
-            CoreError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("未找到 {}（请设置路径或加入系统 PATH）", tool.name()),
-            ))
-        })
+        find_in_path(tool.exe_name())
+            .map(|p| (p, ToolSource::Path))
+            .ok_or_else(|| {
+                CoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("未找到 {}（请设置路径或加入系统 PATH）", tool.name()),
+                ))
+            })
     }
 
     /// 解析并生成命令（已设好程序路径）。
@@ -310,9 +328,22 @@ pub fn parse_version_line(tool: Tool, first_line: &str) -> String {
     token.unwrap_or(line).to_string()
 }
 
-/// 解析工具版本字符串（`-version` / `--version` 输出首行提取版本号）。
-pub fn tool_version(resolver: &ToolResolver, tool: Tool) -> Option<String> {
-    let out = run_tool_capture(resolver, tool, &[version_arg(tool)]).ok()?;
+/// 版本号等值比较：忽略大小写、忽略前缀 `v`、忽略首尾空白。
+/// 远端 release tag（`v2.9.7`）与本地 `--version` 输出（`2.9.7`）用同一口径比对。
+pub fn versions_equal(a: &str, b: &str) -> bool {
+    fn norm(s: &str) -> String {
+        s.trim().trim_start_matches(['v', 'V']).to_ascii_lowercase()
+    }
+    !a.trim().is_empty() && norm(a) == norm(b)
+}
+
+/// 读取指定可执行文件的版本号（「更新」要读**目标文件自己**的版本，
+/// 而不是"当前解析到的那个"）。
+pub fn tool_version_at(tool: Tool, path: &Path) -> Option<String> {
+    let mut cmd = Command::new(path);
+    hide_console(&mut cmd);
+    cmd.arg(version_arg(tool));
+    let out = run_capture(cmd).ok()?;
     let text = decode_text(&out.stdout);
     let first = text.lines().next()?;
     let v = parse_version_line(tool, first);
@@ -320,6 +351,11 @@ pub fn tool_version(resolver: &ToolResolver, tool: Tool) -> Option<String> {
         return None;
     }
     Some(v)
+}
+
+/// 解析工具版本字符串（`-version` / `--version` 输出首行提取版本号）。
+pub fn tool_version(resolver: &ToolResolver, tool: Tool) -> Option<String> {
+    tool_version_at(tool, &resolver.resolve(tool).ok()?)
 }
 
 /// Windows 下隐藏子进程控制台窗口（CREATE_NO_WINDOW），避免 GUI 程序
@@ -458,6 +494,49 @@ mod tests {
             // 也不该报"指定路径不存在"（那是显式配置才有的错误）
             Err(e) => assert!(e.to_string().contains("未找到"), "应报 PATH 未找到：{e}"),
         }
+    }
+
+    #[test]
+    fn resolve_with_source_reports_hit_level() {
+        let root = tempdir().unwrap();
+        let tools = root.path().join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        std::fs::write(tools.join(Tool::Ffprobe.exe_name()), "x").unwrap();
+        let managed = ToolResolver::default().with_tools_dir(&tools);
+        let (_, src) = managed.resolve_with_source(Tool::Ffprobe).unwrap();
+        assert_eq!(src, ToolSource::Managed);
+
+        let custom = root.path().join("custom-ffprobe");
+        std::fs::write(&custom, "x").unwrap();
+        let cfg = DependenciesConfig {
+            ffprobe_path: Some(custom.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        // 显式路径优先于托管目录
+        let resolver = ToolResolver::from_config(&cfg).with_tools_dir(&tools);
+        let (p, src) = resolver.resolve_with_source(Tool::Ffprobe).unwrap();
+        assert_eq!(src, ToolSource::Configured);
+        assert_eq!(p, custom);
+    }
+
+    #[test]
+    fn path_level_is_reported_as_path() {
+        // 无显式路径、无托管目录 → 只可能命中 PATH（工具不存在时跳过断言，
+        // 与其他"不假设工具已安装"的测试同口径）
+        let r = ToolResolver::default();
+        if let Ok((p, src)) = r.resolve_with_source(Tool::Ffmpeg) {
+            assert_eq!(src, ToolSource::Path);
+            assert!(p.is_file());
+        }
+    }
+
+    #[test]
+    fn versions_equal_ignores_v_prefix_and_case() {
+        assert!(versions_equal("2.9.7", "v2.9.7"));
+        assert!(versions_equal(" 2026.08.19 ", "2026.08.19"));
+        assert!(!versions_equal("2026.08.19", "2026.09.18"));
+        // 空值不算相等（避免"查不到远端版本"被当成已是最新）
+        assert!(!versions_equal("", ""));
     }
 
     #[test]

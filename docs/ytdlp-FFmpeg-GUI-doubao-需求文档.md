@@ -110,7 +110,7 @@
 | network | `proxy_url`=""（空 = 全部直连）· `site_proxy`={}（站点 → 是否走代理） |
 
 缺失字段由 serde 默认值补齐；文件损坏时备份为 `config.json.corrupt-<时间戳>.json` 并回退默认值。
-设置页分组：依赖（四个工具路径 + 下载/更新/取消）、网络（代理地址 + 站点分流增删与勾选）、Cookie（站点列表 + 删除）、下载、转码、通用。
+设置页分组：依赖（四个工具路径 + 下载/更新/取消，下载 = 装托管副本并写回路径、更新 = 就地更新当前生效的那一份，语义见 §7）、网络（代理地址 + 站点分流增删与勾选）、Cookie（站点列表 + 删除）、下载、转码、通用。
 
 ## 7. 目录与存储约定
 
@@ -120,13 +120,18 @@
 | --- | --- |
 | `config/` | `config.json`（设置）· `history.json`（列表/队列/条目日志）· `cookies/<host>.json` · `cache/thumbs/<条目id>.jpg` |
 | `temp/` | 任务私有目录 `temp/<任务id>/`（导出的 Cookie 等）、`temp/merge_<uuid>/`（合并中间产物与 concat 列表）、`temp/tool_dl/`（工具链下载暂存） |
-| `tools/` | 托管工具链：`yt-dlp.exe`、`ffmpeg.exe`、`ffprobe.exe`、`deno.exe` |
+| `tools/` | 托管工具链：`yt-dlp.exe`、`ffmpeg.exe`、`ffprobe.exe`、`deno.exe`、`installed.json`（工具安装指纹） |
 
 规则：
 - 所有 JSON 原子写（临时文件 + **单次 rename** 覆盖目标）；写入失败保持内存态并告警。
 - 中间产物只落 `temp/`，不写进用户输出目录；下载/转码/合并产物输出到默认输出目录（默认桌面）。
 - 工具解析顺序：设置路径 → `tools\` → 系统 PATH，**任一级取不到就回退下一级**（`tools\` 为空是常态，PATH 里的工具照常可用；只有"显式填写却不存在"的路径直接报错，用户需要知道填错了）。托管 `tools\` 里按需下载，允许只托管部分工具。
-- "依赖-下载/更新"由系统 `curl` 下载：先 `curl -sIL` 取远端 `content-length` 作为总大小，下载中按已写入字节数换算百分比（每 1% 上报一次；取不到大小时只报阶段），阶段依次 `连接 → 下载 → 校验 → 解压 → 安装`；随后 SHA-256 校验（期望值取不到时跳过）→ zip 解压 → `tmp` + rename 激活。下载中按钮为"取消 <阶段> <百分比>"，点击置取消标志并终止 `curl`。
+- 依赖页「下载」固定装到 `<exe 同级>\tools\`（已有托管副本则直接返回，不重复下载），装完把该路径写回依赖设置，之后优先用这份托管副本。
+- 依赖页「更新」只更新**当前生效的那一份**：设置里填的路径就地覆盖，托管副本则更新 `tools\` 里那份；当前生效的是系统 PATH 里的（不归本程序管）→ 不下载，提示用户在系统里手动更新或改用「下载」装托管副本。
+- 「更新」前先判断有没有新版本，已是最新则不下载、提示"已是最新，无需更新"：
+  - yt-dlp / deno 有版本号 → 比 `releases/latest` 的 tag 与本地 `--version`（忽略 `v` 前缀）；
+  - ffmpeg / ffprobe 是 BtbN 滚动构建（tag 恒为 `latest`）→ 比"上次安装时的远端产物 SHA-256"，来源为 `tools/installed.json`（键 = 配置键名，值 = 目标路径 + 指纹）；记录缺失、目标路径变过或远端指纹取不到，一律按"需要更新"处理。
+- 下载/更新由系统 `curl` 下载：先 `curl -sIL` 取远端 `content-length` 作为总大小，下载中按已写入字节数换算百分比（每 1% 上报一次；取不到大小时只报阶段），阶段依次 `连接 → 下载 → 校验 → 解压 → 安装`；随后 SHA-256 校验（期望值取不到时跳过）→ zip 解压 → `写目标同目录 <文件名>.tmp` + rename 原子覆盖（用户自填目录不可写时在该步报错）。下载中按钮为"取消 <阶段> <百分比>"，点击置取消标志并终止 `curl`。
 - "清理临时文件"扫描 `temp/` 下条目并删除。
 
 ## 8. 数据模型
@@ -209,6 +214,9 @@ ytdlp-FFmpeg-GUI --url <URL> [--url <URL> ...] [--cookies <path>] [--dir <path>]
 13. **已知限制**：未禁用 ffmpeg 的 autorotate。源文件自带 `rotate` 标记时，ffmpeg 会先按显示矩阵自动旋转，此时再叠加用户手动旋转会导致双重旋转。`MediaMeta.rotate_tag` 已记录源标记，后续可据此决定是否加 `-noautorotate` 并用它初始化 `rot_angle`。
 14. **日期/时间戳一律走 `timefmt`**（epoch 秒 + 本地时区偏移；Windows 读注册表 `ActiveTimeBias`，含夏令时；其余平台按 UTC）。std 不提供本地时区，直接按 UTC 手算日期在东八区 0:00–8:00 会差一天（合并默认名、`日期-标题` 模板、`updated_at` 均受影响）。
 15. **锁纪律**：`history` 等全局 `std::sync::Mutex` 不可重入——持锁期间不做文件 IO、不 `emit` 事件、不调用会再次加锁的函数（`log_item`/`update_item` 先出锁再调用），否则当场死锁冻结 UI。
+16. **托管 `tools\` 目录只能当"回退候选"，不能占用显式配置位**：`ToolResolver::with_tools_dir` 只登记目录；`resolve` 顺序为 显式路径 → 托管目录 → 系统 PATH，托管文件不存在必须继续走 `find_in_path`。一旦把 `tools\<工具名>` 塞进"已配置路径"位，首次运行时空的 `tools\` 会让四个工具全部报"未找到"（而 PATH 里明明有），`--js-runtimes deno:<path>` 也会因此拿不到 PATH 里的 deno。
+17. **三级命中位置（`ToolSource`）是「更新」的判据**：显式路径 / 托管副本可就地更新，命中 PATH 只能提示手动更新。所以 `resolve_with_source` 的每一级判定必须与解析结果严格对应，不要把"用户填的路径恰好也在 PATH 里"当成 PATH 来源。
+18. **ffmpeg/ffprobe 没有版本号可比**：BtbN 是滚动发布（`releases/latest` 的 tag 恒为 `latest`），"有没有新版本"只能靠远端产物 SHA-256 与 `tools/installed.json` 里的安装指纹比对；判不准时必须落到"更新一次"，不能反过来误报"已是最新"。
 
 ## 12. 未实现项（不在当前代码中）
 
