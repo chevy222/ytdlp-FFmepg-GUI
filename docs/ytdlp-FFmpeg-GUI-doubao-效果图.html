@@ -219,7 +219,7 @@
       </div>
       <button class="btn" id="btnAddFile">添加本地文件</button>
       <button class="btn" id="btnAddDir">添加目录</button>
-      <select id="stateFilter" title="按状态筛选（不占额外行高）"><option value="">全部 (8)</option><option value="probing">解析中 (1)</option><option value="pending">已就绪 (2)</option><option value="working">处理中 (2)</option><option value="done">已完成 (2)</option><option value="failed">失败 (0)</option><option value="needlogin">需要登录 (1)</option></select>
+      <button class="btn ghost icon" id="btnClearList" title="清空列表"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
       <button class="btn ghost icon" id="btnSettings" title="设置"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg></button>
     </div>
 
@@ -381,8 +381,6 @@
         </div></div>
       </div>
       <div class="page hidden" id="page-dl">
-        <div class="set-row"><div class="k">画质上限<small>按短边计，超限自动降分辨率转码</small></div><div class="v"><select><option>1080P（默认）</option><option>720P</option><option>2160P</option><option>不限</option></select></div></div>
-        <div class="set-row"><div class="k">下载高度硬上限</div><div class="v"><select><option>2160P（默认）</option><option>1080P</option></select></div></div>
         <div class="set-row"><div class="k">并发分片</div><div class="v"><select><option>4（默认）</option><option>1</option><option>2</option><option>8</option></select></div></div>
         <div class="set-row"><div class="k">重试次数</div><div class="v"><select><option>3（默认）</option><option>1</option><option>2</option><option>5</option></select></div></div>
         <div class="set-row"><div class="k">下载选项<small>仅音频 / 播放列表</small></div><div class="v"><label class="chk2"><input type="checkbox"> 仅音频默认</label>&nbsp;&nbsp;<label class="chk2"><input type="checkbox"> 播放列表默认</label></div></div>

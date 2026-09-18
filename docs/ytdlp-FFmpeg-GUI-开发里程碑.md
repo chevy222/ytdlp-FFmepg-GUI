@@ -23,8 +23,9 @@
 | M4 CLI 入口 | `86a5163` | 09-17 | CLI 解析（--url/--cookies/--dir/--yt-dlp-path/--deno-path）+ 单实例转发（UL-09） | 通过 |
 | P1 增强 | `0f9fe6a` | 09-17 | 播放列表展开平铺（DL-09）+ 时间范围下载（DL-12）+ 合并音量归一化（MG-05） | 通过 |
 | P2/TC-16 | `33dc546` | 09-18 | 硬件编码器探测（QSV/NVENC/AMF）+ 硬编失败自动回退 libx265 | 通过 |
-| 发布收尾 | `ef9cc88` | 09-18 | Release 附件补单 EXE 直传（zip + exe）；README 里程碑对齐 | 通过 |
+| 发布收尾 | `ef9cc88` | 09-18 | release.yml 权限修正（contents: write）+ Release 只发 zip；README 里程碑对齐 | 通过 |
 | CI 修复 | `223e5b0` | 09-18 | exec 单测平台无关化（tool_names cfg windows 分支） | 通过 |
+| 迭代修复 | `1940420`→`d00d30e` | 09-18 | 转码输出参数/滤镜 min() 转义、画质列采样率+码率估算、转码失败自动重解析、封面旋转自适应行高、登录窗走系统代理（移除环境参数防卡死） | 通过 |
 
 > 后续规划（P2/P3 尾项，未被要求实现）：MG-07 音视频合成、Q11 浏览器扩展桥接。
 
@@ -87,15 +88,15 @@
 
 ### 发布收尾（ef9cc88）+ CI 修复（223e5b0）
 
-- `release.yml`：push `v*` tag → Windows runner → 单测 → clippy(-D warnings) → release 构建 → GitHub Release 草稿上传 **zip + 单 EXE 直传**。
+- `release.yml`：push `v*` tag → Windows runner → 单测 → clippy(-D warnings) → release 构建 → GitHub Release 草稿上传 **zip（单 EXE 压缩）**；workflow 声明 `permissions: contents: write` 以便创建 Release。
 - CI 平台化修复：`exec.rs` tool_names 测试按 `cfg(windows)` 断言 `.exe` 后缀，全仓排查无其它硬编码文件名。
 
 ---
 
 ## 质量基线（当前）
 
-- `cargo test -p ytdlp-core`：**110 passed**。
+- `cargo test -p ytdlp-core`：**117 passed**。
 - `cargo clippy -p ytdlp-core --all-targets -- -D warnings` 与 `cargo xwin clippy -p ytdlp-gui`：**0 警告**。
 - Release 单 EXE 构建通过：`target/x86_64-pc-windows-msvc/release/ytdlp-FFmpeg-GUI.exe`（~11MB）。
 - UI 自检（html skill shot.py）：无控制台错误、无 lint 触发。
-- 待办：打 `v1.0.0` tag 触发 CI 出 Release 草稿；Windows 真机端到端验证（下载→转码→合并实链路）。
+- 待办：打 `v1.0.0` tag 触发 CI 出 Release 草稿（仅 zip）；Windows 真机端到端验证（下载→转码→合并实链路）。

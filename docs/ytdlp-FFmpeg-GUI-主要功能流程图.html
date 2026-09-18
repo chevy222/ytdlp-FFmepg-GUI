@@ -20,7 +20,7 @@
       <div style="align-self:center;color:#14b8a6;font-weight:700;font-size:16px;">→</div>
       <div style="flex:1;min-width:150px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px;">
         <div style="font-weight:700;color:#92400e;margin-bottom:6px;">③ 统一列表 · 已就绪</div>
-        <div style="font-size:12px;color:#64748b;line-height:1.7;">同一份列表，勾选即可批量操作<br>URL 解析完 5s 倒计时自动下载（点画质下拉取消）<br>状态筛选：工具栏右侧下拉（全部/解析中/已就绪/处理中/已完成/失败，带计数）</div>
+        <div style="font-size:12px;color:#64748b;line-height:1.7;">同一份列表，勾选即可批量操作<br>URL 解析完 5s 倒计时自动下载（点画质下拉取消）<br>工具栏右侧垃圾桶图标清空列表（无状态筛选）</div>
       </div>
       <div style="align-self:center;color:#14b8a6;font-weight:700;font-size:16px;">→</div>
       <div style="flex:1.2;min-width:170px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:10px;">
@@ -47,7 +47,7 @@
           时间范围：行操作"剪辑"设起止 → --download-sections<br>
           参数：--cookies（config/cookies/）、PO-Token、代理、并发分片、重试、仅音频、嵌入封面/元数据<br>
           输出：默认桌面（可配）→ 文件名模板（纯标题/标题+ID/日期-标题）<br>
-          后处理：画质上限降分辨率 → 音量归一化（通用）→ 产物本地解析回列表<br>
+          后处理：音量归一化（通用）→ 产物本地解析回列表<br>
           播放列表：默认开关 → 展开每集平铺
         </div>
       </div>
@@ -157,7 +157,7 @@
     <div style="padding:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;font-size:12px;color:#64748b;line-height:1.8;">
       <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;"><b style="color:#334155;">依赖</b><br>ffmpeg/ffprobe/yt-dlp/deno 路径（默认 PATH，可输路径）；下载与更新工具按钮（GitHub 仓库 ytdlp-FFmpeg-GUI）；工具链托管目录默认 &lt;exe 同级&gt;\tools\</div>
       <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;"><b style="color:#334155;">网络</b><br>代理地址（v-grow 输入框 + 常用代理工具 IP/端口下拉，历史上限 100）；站点分流加+-列表；Cookie 目录默认 &lt;exe 同级&gt;\config\cookies\，直接页面管理</div>
-      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;"><b style="color:#334155;">下载</b><br>画质上限、下载高度硬上限、并发分片、重试、仅音频、播放列表默认、嵌入封面/元数据、文件名模板（下载/转码/合并共用）</div>
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;"><b style="color:#334155;">下载</b><br>并发分片、重试、仅音频、播放列表默认、嵌入封面/元数据、文件名模板（下载/转码/合并共用）</div>
       <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;"><b style="color:#334155;">转码</b><br>长边/短边上限、码率封顶与兜底、默认编码器（auto/libx265/NVENC/AMF，探测标注）、QSV low_power、保留封面；x265 CRF 固定 23</div>
       <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;"><b style="color:#334155;">通用</b><br>默认输出目录（桌面）、碰撞命名策略、音量归一化（下载后处理与转码共用）+ 增益上限、并发任务数（全局共享，默认 3）、启动时检查更新、历史上限、清理解析缓存</div>
     </div>

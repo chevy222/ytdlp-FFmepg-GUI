@@ -20,7 +20,7 @@
       <div style="align-self:center;color:#14b8a6;font-weight:700;font-size:16px;">→</div>
       <div style="flex:1;min-width:150px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px;">
         <div style="font-weight:700;color:#92400e;margin-bottom:6px;">③ 统一列表 · 待处理</div>
-        <div style="font-size:12px;color:#64748b;line-height:1.7;">同一份列表，勾选即可批量操作<br>状态筛选（全部/下载中/解析中/待处理/处理中/已完成/失败）</div>
+        <div style="font-size:12px;color:#64748b;line-height:1.7;">同一份列表，勾选即可批量操作<br>工具栏右侧垃圾桶图标清空列表（无状态筛选）</div>
       </div>
       <div style="align-self:center;color:#14b8a6;font-weight:700;font-size:16px;">→</div>
       <div style="flex:1.2;min-width:170px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:10px;">
@@ -35,7 +35,7 @@
     <div style="background:#f8fafc;padding:6px 12px;font-size:13px;font-weight:700;color:#334155;">二、统一列表 · 条目状态机（MediaItem）</div>
     <div style="padding:12px;display:flex;flex-wrap:wrap;gap:6px;">
       <span style="background:#ede9fe;color:#6d28d9;border-radius:99px;padding:3px 12px;font-size:12px;">解析中</span>
-      <span style="background:#fef3c7;color:#b45309;border-radius:99px;padding:3px 12px;font-size:12px;">待处理（已就绪）</span>
+      <span style="background:#fef3c7;color:#b45309;border-radius:99px;padding:3px 12px;font-size:12px;">已就绪</span>
       <span style="background:#e0f2fe;color:#0369a1;border-radius:99px;padding:3px 12px;font-size:12px;">下载中</span>
       <span style="background:#cffafe;color:#0e7490;border-radius:99px;padding:3px 12px;font-size:12px;">后处理中</span>
       <span style="background:#cffafe;color:#0e7490;border-radius:99px;padding:3px 12px;font-size:12px;">转码中</span>
@@ -54,7 +54,7 @@
     <div style="padding:12px;display:flex;flex-wrap:wrap;gap:8px;">
       <div style="flex:1;min-width:230px;border:1px solid #e2e8f0;border-radius:8px;padding:10px;">
         <div style="font-weight:700;color:#0369a1;margin-bottom:6px;">下载（yt-dlp）</div>
-        <div style="font-size:12px;color:#334155;line-height:1.8;">· 七级格式回落 + 排序串，MP4 容器统一<br>· 画质上限 MAX_H（短边），>上限自动降分辨率转码（QSV→libx265）<br>· 下载后处理：音量归一化 + 封面/元数据嵌入 + 产物本地解析（MD-06）<br>· 内置登录（WebView2：顶部中心"登录完成"按钮 + SPA 800ms 保活）、站点分流代理<br>· 时间范围下载 / 带宽限速（P1）</div>
+        <div style="font-size:12px;color:#334155;line-height:1.8;">· 七级格式回落 + 排序串，MP4 容器统一<br>· 下载后处理：音量归一化 + 封面/元数据嵌入 + 产物本地解析（MD-06）<br>· 内置登录（WebView2：顶部中心"登录完成"按钮 + SPA 800ms 保活，走系统代理）、站点分流代理<br>· 时间范围下载（P1）</div>
       </div>
       <div style="flex:1;min-width:230px;border:1px solid #e2e8f0;border-radius:8px;padding:10px;">
         <div style="font-weight:700;color:#0369a1;margin-bottom:6px;">转码（ffmpeg）</div>
@@ -71,7 +71,7 @@
   <div style="background:#fff;border:1.5px solid #f59e0b;border-radius:10px;margin-bottom:10px;overflow:hidden;">
     <div style="background:#fffbeb;padding:6px 12px;font-size:13px;font-weight:700;color:#92400e;">四、工程架构（全新脚手架，核心层与界面分离）</div>
     <div style="padding:12px;display:flex;flex-direction:column;gap:8px;">
-      <div style="background:#f8fafc;border-radius:8px;padding:8px 12px;font-size:12px;color:#334155;line-height:1.7;"><b>界面层（UI）</b>｜顶部输入区（URL/添加文件/目录）· 状态筛选 · 批量操作栏 · 统一媒体列表 · 转码面板（抽屉）· 合并面板（抽屉）· 设置弹窗 · 底部状态栏（原生 HTML/CSS/JS）</div>
+      <div style="background:#f8fafc;border-radius:8px;padding:8px 12px;font-size:12px;color:#334155;line-height:1.7;"><b>界面层（UI）</b>｜顶部输入区（URL/添加文件/目录）· 批量操作栏 · 统一媒体列表 · 转码面板（抽屉）· 合并面板（抽屉）· 设置弹窗 · 底部状态栏（原生 HTML/CSS/JS）</div>
       <div style="background:#f8fafc;border-radius:8px;padding:8px 12px;font-size:12px;color:#334155;line-height:1.7;"><b>命令与状态层</b>｜前后端命令桥接 · 全局状态（统一列表数据）· 登录窗 · CLI 入口/单实例转发</div>
       <div style="background:#fefce8;border-radius:8px;padding:10px 12px;">
         <div style="font-size:12px;color:#334155;line-height:1.8;">
