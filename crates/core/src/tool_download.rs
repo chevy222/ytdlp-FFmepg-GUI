@@ -33,7 +33,7 @@ pub const FFMPEG_VERSION_FEED: &str = "https://www.gyan.dev/ffmpeg/builds/releas
 pub const FFMPEG_BUILDS_PAGE: &str = "https://www.gyan.dev/ffmpeg/builds/";
 
 /// 版本 feed 的种类。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VersionFeed {
     /// GitHub `releases/latest`：跟随重定向，取最终 URL 的 tag。
     GithubLatest(&'static str),
