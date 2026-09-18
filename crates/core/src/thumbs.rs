@@ -2,25 +2,26 @@
 //! 统一落在 `<exe 同级>\config\cache\thumbs\<id>.jpg`，前端经 asset 协议展示。
 
 use crate::exec::{ChildGuard, Tool, ToolResolver};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// 从远程缩略图 URL 下载到 dest（如 yt-dlp 的 thumbnail）。
 pub fn save_remote_thumb(url: &str, dest: &Path) -> Result<(), String> {
     ensure_parent(dest).map_err(|e| e.to_string())?;
-    let resp = ureq::get(url)
-        .call()
-        .map_err(|e| format!("缩略图下载失败：{e}"))?;
-    let mut body = Vec::new();
-    let mut reader = resp.into_reader();
-    reader
-        .read_to_end(&mut body)
-        .map_err(|e| format!("缩略图读取失败：{e}"))?;
-    if body.is_empty() {
+    let tmp = dest.with_extension("tmp.jpg");
+    let tmp_str = tmp.to_string_lossy().into_owned();
+    let output = std::process::Command::new("curl")
+        .args(["-L", "--fail", "-sS", "-o", &tmp_str, url])
+        .output()
+        .map_err(|e| format!("无法调用 curl：{e}"))?;
+    if !output.status.success() || !tmp.is_file() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err("缩略图下载失败".into());
+    }
+    let size = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+    if size == 0 {
+        let _ = std::fs::remove_file(&tmp);
         return Err("缩略图为空".into());
     }
-    let tmp = dest.with_extension("tmp.jpg");
-    std::fs::write(&tmp, &body).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, dest).map_err(|e| e.to_string())?;
     Ok(())
 }

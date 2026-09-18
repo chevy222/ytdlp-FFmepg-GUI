@@ -9,7 +9,7 @@
 //!
 //! SHA-256：各源均提供 `.sha256` 旁路文件（deno 缺失时跳过校验并记录）。
 
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::exec::Tool;
@@ -179,49 +179,42 @@ impl ToolDownloader {
         let url = kind.url();
 
         on_progress("连接".into(), 0.0);
-        let resp = ureq::get(url)
-            .timeout(std::time::Duration::from_secs(30))
-            .call()
-            .map_err(|e| format!("下载失败 {url}: {e}"))?;
-        let total = resp
-            .header("Content-Length")
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(0);
-        let mut reader = resp.into_reader();
-        let mut file = std::fs::File::create(&raw)
-            .map_err(|e| format!("创建临时文件失败：{e}"))?;
-        let mut buf = [0u8; 64 * 1024];
-        let mut done: u64 = 0;
-        loop {
-            let n = reader
-                .read(&mut buf)
-                .map_err(|e| format!("下载中断：{e}"))?;
-            if n == 0 {
-                break;
-            }
-            file.write_all(&buf[..n])
-                .map_err(|e| format!("写入临时文件失败：{e}"))?;
-            done += n as u64;
-            if total > 0 {
-                on_progress("下载".into(), (done as f32 / total as f32).min(1.0));
-            }
-        }
-        if total > 0 && done != total {
+        // 用系统 curl（Windows 10+ 自带 curl.exe）下载，避免 TLS 库交叉编译问题
+        let out_str = raw.to_string_lossy().into_owned();
+        let mut cmd = std::process::Command::new("curl");
+        cmd.args(["-L", "--fail", "-sS", "-o", &out_str, url]);
+        let output = cmd
+            .output()
+            .map_err(|e| format!("无法调用 curl：{e}"))?;
+        if !output.status.success() {
             let _ = std::fs::remove_file(&raw);
-            return Err(format!("下载不完整：{done}/{total}"));
+            let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(if err.is_empty() {
+                format!("下载失败 {url}")
+            } else {
+                format!("下载失败 {url}: {err}")
+            });
         }
+        let done = std::fs::metadata(&raw).map(|m| m.len()).unwrap_or(0);
+        if done == 0 {
+            let _ = std::fs::remove_file(&raw);
+            return Err(format!("下载失败 {url}: 文件为空"));
+        }
+        on_progress("下载".into(), 1.0);
         Ok((raw, is_zip))
     }
 
     /// 取 SHA-256 期望值（网络失败/404 返回空，跳过校验）。
     fn fetch_sha(&self, kind: ToolKind) -> Option<String> {
         let url = kind.sha_url()?;
-        let resp = ureq::get(url).timeout(std::time::Duration::from_secs(20)).call().ok()?;
-        let mut text = String::new();
-        resp.into_reader()
-            .take(512)
-            .read_to_string(&mut text)
+        let output = std::process::Command::new("curl")
+            .args(["-L", "--fail", "-sS", url])
+            .output()
             .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&output.stdout).into_owned();
         // 格式："<64hex>  filename" 或 裸 64hex
         let hex = text
             .split_whitespace()
