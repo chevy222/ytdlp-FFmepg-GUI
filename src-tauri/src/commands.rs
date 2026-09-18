@@ -1283,10 +1283,26 @@ fn run_transcode_task(app: AppHandle, id: String) {
         };
         let cfg = state.config.lock().unwrap().clone();
         let out_dir = default_output_dir(&state, &item);
+        // 产物命名：条目标题是 URL（探测没拿到真标题）或为空时，退回输入文件名——
+        // 否则标题经 sanitize 后 "https___www.youtube.com_watch_v=xxx.mp4" 就是输出名
+        let title = {
+            let t = item.title.trim();
+            let is_url =
+                t.starts_with("http://") || t.starts_with("https://") || t.contains("://");
+            if t.is_empty() || is_url {
+                std::path::Path::new(&path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| t.to_string())
+            } else {
+                t.to_string()
+            }
+        };
         let params = TranscodeParams {
             input: path.clone(),
             out_dir,
-            title: item.title.clone(),
+            title,
             filename_template: cfg.download.filename_template.clone(),
             container: "mp4".into(),
             encoder_mode: cfg.transcode.force_encoder_mode.clone(),

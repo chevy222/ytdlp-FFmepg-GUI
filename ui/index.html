@@ -530,10 +530,13 @@ function rowHtml(it){
   const id=esc(it.id);
   const ra=it.rot_angle; const ang=(typeof ra==='number'?ra:((ra&&ra.degrees)||0));
   const probing = it.status==='Probing';
+  // 旋转只对"文件已存在"的条目有意义（rot_angle 是转码参数）：
+  // 本地文件/产物条目解析完即可设；URL 条目要等下载产物落地（后处理中起）
+  const hasFile = it.kind!=='UrlTask' || ['PostProcessing','Done','Transcoding'].includes(it.status);
   const cv = probing ? '' :
       '<div class="cv"><div class="thumb'+(it.thumb?'':' empty')+(ang?' rot'+(ang%360):'')+'" data-id="'+id+'">'+(it.thumb?('<img src="'+thumbSrc(it.thumb)+'" alt="">'):'<span class="ph">影</span>')+'</div>'+
       '<span class="rotbadge'+(ang?' show':'')+'">'+ang+'°</span></div>';
-  const rots = probing ? '' :
+  const rots = (probing || !hasFile) ? '' :
       '<button class="rotbtn" data-act="rotcw" data-id="'+id+'" title="顺时针">'+rotSvg(true)+'</button>'+
       '<button class="rotbtn" data-act="rotccw" data-id="'+id+'" title="逆时针">'+rotSvg(false)+'</button>';
   return '<tr data-id="'+id+'">'+

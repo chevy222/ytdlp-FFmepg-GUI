@@ -215,7 +215,14 @@ pub fn detect_hw_encoders(resolver: &ToolResolver) -> Result<HwEncoders> {
     Ok(parse_encoders_output(&text))
 }
 
-/// 视频滤镜链：旋转（transpose）→ 分辨率上限（不放大，force_original_aspect_ratio）。
+/// 视频滤镜链：旋转（transpose）→ 分辨率上限（不放大）。
+///
+/// 上限语义：`max_h` = **短边**上限、`max_w` = 长边上限（§TC-05）。
+/// 关键：transpose 之后 `iw`/`ih` 是**互换过**的（1920×1080 转 90° 后 ih=1920），
+/// 直接写 `min(ih,max_h)` 会把原视频的**长边**当短边砍（1080P 转 90° 得 606×1080）。
+/// 因此用旋转不变量表达：短边 = `min(iw,ih)`、长边 = `max(iw,ih)`——无论转不转都成立。
+/// 缩放系数 s = min(1, max_h/短边, max_w/长边)，宽高各自 `trunc(*s/2)*2` 保偶数边长
+/// （奇数宽会让 libx265/QSV 直接报 chroma subsampling 错误）。
 fn build_vf(rot: RotAngle, max_w: u32, max_h: u32) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     match rot.degrees() {
@@ -225,23 +232,16 @@ fn build_vf(rot: RotAngle, max_w: u32, max_h: u32) -> Option<String> {
         _ => {}
     }
     if max_w > 0 || max_h > 0 {
-        let w = if max_w > 0 {
-            format!("min(iw,{})", max_w)
-        } else {
-            "iw".into()
-        };
-        let h = if max_h > 0 {
-            format!("min(ih,{})", max_h)
-        } else {
-            "ih".into()
-        };
-        // min() 内逗号在 filtergraph 里是滤镜链分隔符，需用单引号包裹表达式；
-        // force_divisible_by=2 保证偶数边长 —— 缺了它时非标宽高比会算出奇数宽
-        // （实测 1214x2160 → 607x1080），libx265/QSV 直接报
-        // "Picture width must be an integer multiple of the specified chroma subsampling"
+        let mut factors = vec!["1".to_string()];
+        if max_h > 0 {
+            factors.push(format!("{}/min(iw,ih)", max_h));
+        }
+        if max_w > 0 {
+            factors.push(format!("{}/max(iw,ih)", max_w));
+        }
+        let s = format!("min({})", factors.join(","));
         parts.push(format!(
-            "scale='{}':'{}':force_original_aspect_ratio=decrease:force_divisible_by=2",
-            w, h
+            "scale='trunc(iw*{s}/2)*2':'trunc(ih*{s}/2)*2'"
         ));
     }
     if parts.is_empty() {
@@ -615,15 +615,28 @@ mod tests {
         assert_eq!(build_vf(RotAngle::ZERO, 0, 0), None);
         let vf = build_vf(RotAngle::from_degrees(90), 1920, 1080).unwrap();
         assert!(vf.starts_with("transpose=1,"), "{}", vf);
-        // min() 内逗号必须被引号包裹，否则 filtergraph 解析为滤镜链分隔符；
-        // force_divisible_by=2 保证偶数边长（否则奇数宽会让 libx265 直接失败）
-        assert!(
-            vf.contains("scale='min(iw,1920)':'min(ih,1080)':force_original_aspect_ratio=decrease:force_divisible_by=2"),
-            "{}",
-            vf
+        // 短边/长边上限必须用旋转不变量 min(iw,ih)/max(iw,ih)：
+        // transpose 后 iw/ih 互换，写 min(ih,max_h) 会把原长边当短边砍
+        // （1920×1080 转 90° 后 ih=1920 → 被压成 606×1080 的历史 bug）
+        let expected = concat!(
+            "scale='trunc(iw*min(1,1080/min(iw,ih),1920/max(iw,ih))/2)*2':",
+            "'trunc(ih*min(1,1080/min(iw,ih),1920/max(iw,ih))/2)*2'"
+        );
+        assert_eq!(vf, format!("transpose=1,{}", expected), "{}", vf);
+        // 旋转与不旋转时 scale 表达式完全一致（旋转不变性）
+        assert_eq!(
+            build_vf(RotAngle::ZERO, 1920, 1080).unwrap(),
+            expected,
+            "转 0° 与转 90° 的缩放上限表达式必须相同"
         );
         let vf = build_vf(RotAngle::from_degrees(270), 0, 0).unwrap();
         assert_eq!(vf, "transpose=2");
+        // 只设一个上限时其余因子不出现（max_w=0 不参与 min()，避免除零）
+        let vf = build_vf(RotAngle::ZERO, 0, 1080).unwrap();
+        assert_eq!(
+            vf,
+            "scale='trunc(iw*min(1,1080/min(iw,ih))/2)*2':'trunc(ih*min(1,1080/min(iw,ih))/2)*2'"
+        );
     }
 
     #[test]

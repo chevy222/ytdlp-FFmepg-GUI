@@ -31,7 +31,7 @@
 | UL-10 | 启动恢复：非终态且非"已就绪"/"需要登录"的条目一律标记失败（"应用重启，任务中断"），可重试；"需要登录"跨重启保持原状（未登录事实不因重启改变） | `src-tauri/src/lib.rs::setup` |
 | UL-11 | 封面缩略图：URL 取远程缩略图（系统 `curl` 下载），本地文件/下载产物用 ffmpeg 抽帧（`-ss 0.5`，宽 ≤360），统一落在 `config/cache/thumbs/<条目id>.jpg` | `thumbs.rs` |
 | UL-12 | **工具栏不放品牌 logo/应用名称区块**（左上角不显示 logo 图标 +"影栈 | 本地视频工作台"之类）——工具栏直接从 URL 输入框开始，保持紧凑。应用图标只出现在窗口标题栏/任务栏/欢迎页中央，不在工具栏重复占位 | `ui/index.html::toolbar` |
-| UL-12 | 手动旋转：缩略图上的顺/逆时针箭头 → 角度 0/90/180/270 随条目保存（`rot_angle`，设置即落盘，重启不丢），转码时生效；角度 ≠ 0 时缩略图右上角显示角标 | `commands.rs::rot_item`、`model.rs::RotAngle` |
+| UL-12 | 手动旋转：缩略图上的顺/逆时针箭头 → 角度 0/90/180/270 随条目保存（`rot_angle`，设置即落盘，重启不丢），转码时生效；角度 ≠ 0 时缩略图右上角显示角标。旋转按钮只对**文件已存在**的条目显示：本地文件/转码产物/合并产物解析完即可设，URL 条目要等下载产物落地（后处理中起）才出现——`rot_angle` 是转码参数，下载中显示只会误导 | `commands.rs::rot_item`、`model.rs::RotAngle`、`ui/index.html::rowHtml` |
 | UL-13 | 每条目独立日志（最近 300 行），弹窗可查看/复制/仅清空视图 | `model.rs::push_log`、`ui/index.html::openLog` |
 | UL-14 | 底部状态栏：左端 `运行中 n/m（并发上限）`——n = 处于下载中/后处理中/转码中/合并中的条目数，m = `general.concurrency`（悬停显示口径）；右端四个工具自检徽标，解析到可执行文件且版本可读时显示 `工具 版本`，解析到但版本探测失败显示 `工具（已找到）`，未解析到显示 `工具（未找到）`（悬停显示解析到的绝对路径） | `ui/index.html::renderQueue`/`refreshDeps`、`commands.rs::probe_dependencies`、`exec.rs::parse_version_line` |
 
@@ -73,7 +73,7 @@
 | TC-02 | 批量转码逐条目独立执行，各自记日志与失败原因；失败条目可"重试"（重新解析后再转码） | `commands.rs::start_transcode` / `finish_transcode` |
 | TC-03 | 编码器：`auto`（`ffmpeg -encoders` 探测到 `hevc_qsv` 用 QSV，否则 libx265）/ `libx265` / `hevc_nvenc` / `hevc_amf`。参数：libx265 `-crf 23 -preset medium`；NVENC `-rc vbr -cq 23 -preset p5`；AMF `-qp_i 23 -qp_p 23 -quality balanced`；QSV `-global_quality 23`（`low_power` 开时加 `-low_power 1`） | `transcode.rs::pick_encoder` / `detect_hw_encoders` |
 | TC-04 | 手动旋转：按条目 `rot_angle` 生成 `transpose=1`（90°）/ `transpose=1,transpose=1`（180°）/ `transpose=2`（270°）；不做自动纠正 | `transcode.rs::build_vf` |
-| TC-05 | 分辨率封顶：`scale='min(iw,MAXW)':'min(ih,MAXH)':force_original_aspect_ratio=decrease:force_divisible_by=2` —— 保持比例、不放大、**偶数对齐** | `transcode.rs::build_vf` |
+| TC-05 | 分辨率封顶：`scale='trunc(iw*s/2)*2':'trunc(ih*s/2)*2'`，其中 `s=min(1, MAXH/min(iw,ih), MAXW/max(iw,ih))`——上限按**短边/长边**（旋转不变量）判定：transpose 后 `iw`/`ih` 互换，直接写 `min(ih,MAXH)` 会把原视频长边当短边砍（1080P 转 90° 变 606×1080 的历史 bug）；宽高各自取偶，不放大 | `transcode.rs::build_vf` |
 | TC-06 | 码率封顶：`brcap_kbps` 有值时加 `-maxrate <n>k -bufsize <2n>k` | `transcode.rs::build_args` |
 | TC-07 | 音频增益：开启归一化且 `max_volume ∈ (-100,-0.5)dB` 时按 `min(-max_volume, max_gain_db)` 生成 `volume=XdB` 并重编码 AAC；否则音频 `copy`；作用于全部音轨（`-map 0:a?`） | `transcode.rs::build_args` |
 | TC-08 | 封面：`keep_cover` 开时按探测到的**封面流绝对索引**映射并 `-c:v:1 copy`；源为 MKV 附件型封面（探测不到 attached_pic）时回退 `-map 0:t?` + `-c:t copy` | `transcode.rs::build_args` |
@@ -205,7 +205,7 @@ ytdlp-FFmpeg-GUI --url <URL> [--url <URL> ...] [--cookies <path>] [--dir <path>]
 2. **`-vf` 与第二条视频流的 `copy` 不能共存**：报 `Filtering and streamcopy cannot be used together.`。需要滤镜又要保留封面时，主视频走 `-filter_complex "[0:<idx>]<vf>[v]"` + `-map "[v]"`。
 3. **视频类选项必须写 `-c:v:0` / `-tag:v:0`**：不带流后缀的 `-tag:v` 会落到 mjpeg 封面流上，MP4 写头直接失败（`Tag hvc1 incompatible with output codec id '7' (mp4v)`）；`-c:v` 同理会触发多 codec 选项告警。
 4. **`extradata` 需要 `-show_data`**：只给 `-show_format -show_streams` 时 ffprobe 只输出 `extradata_size`，拿不到 SPS/PPS；而 concat demuxer 对 SPS 不一致的输入**不报错**（exit 0）却会从第 2 段起花屏，因此同参判据必须建立在真实 extradata 上，且"未知即判不一致"。
-5. **`scale` 要显式偶数对齐**：`scale='min(iw,W)':'min(ih,H)':force_original_aspect_ratio=decrease` 保比正确但**不保证偶数**（1214x2160 → 607x1080），libx265 会报 `Picture width must be an integer multiple of the specified chroma subsampling` 且打不开编码器；必须加 `force_divisible_by=2`（或宽用 `-2`）。
+5. **`scale` 要显式偶数对齐**：`scale='min(iw,W)':'min(ih,H)':force_original_aspect_ratio=decrease` 保比正确但**不保证偶数**（1214x2160 → 607x1080），libx265 会报 `Picture width must be an integer multiple of the specified chroma subsampling` 且打不开编码器；必须加 `force_divisible_by=2`（或宽用 `-2`）。叠加旋转（TC-05）时不能用 `min(ih,H)`——transpose 后 `ih` 已与 `iw` 互换，上限必须用旋转不变量 `min(iw,ih)`/`max(iw,ih)` 表达。
 6. **不要加 `--ignore-errors`**：yt-dlp 官方语义是"忽略下载与后处理错误、仍视为成功"，会让退出码判定失效、把失败当成功。
 7. **产物定位不要"扫目录取最旧/全部"**：DASH 下载的最终文件只出现在 `[Merger] Merging formats into "…"` 行，`Destination:` 行指向随后被删除的中间文件；显式路径"存在即产物"，只有解析不到时才扫描目录且只认本次新增的最新一个。
 8. **FAT/exFAT 时间戳粒度 2s**：显式产物路径不要再叠加 mtime 过滤，否则刚下载的文件可能被误判为"非本次产物"而假失败。
