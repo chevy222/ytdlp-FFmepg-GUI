@@ -4,10 +4,21 @@
 //! - 点击"登录完成"→ 跳转本地 done URL（携带 document.cookie）→ Rust 抓取保存
 //! - Windows 上优先经 WebView2 CookieManager（COM）抓取含 HttpOnly 的 Cookie；失败回退 URL 携带的 cookie
 //! - 保存后关闭登录窗并自动重解析 NeedLogin 条目
+//! - 三种关闭方式：右上角 ×、顶部提示条内"关闭"、Esc 键（都跳本地 close URL，由 Rust 关窗）
+//! - **保存与关闭回调必须放到子线程执行**：`on_page_load` 运行在主线程，而
+//!   `with_webview` / 窗口关闭都要回到主线程执行，在主线程里原地等待会自锁 ——
+//!   表现为登录窗卡死、点 × 无反应。见 `open_login` 内注释。
 
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::commands::save_cookies;
+
+/// 登录窗使用的 UA：桌面 Chrome。
+///
+/// WebView2 的默认 UA 带 `Edg/` 等标识，部分站点会据此返回空白页或进入重定向
+/// 循环；换成标准桌面 Chrome UA 以提高兼容性。
+pub const LOGIN_USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 /// 已知支持内置登录的站点 → 登录 URL。
 pub fn login_url_for_host(host: &str) -> Option<String> {
@@ -43,19 +54,27 @@ pub fn open_login(app: &AppHandle, host: &str, url: &str) -> Result<(), String> 
     .inner_size(1000.0, 760.0)
     .min_inner_size(720.0, 560.0)
     .center()
+    .user_agent(LOGIN_USER_AGENT)
     .initialization_script(&script)
     .on_page_load(move |webview, payload| {
         let url = payload.url().to_string();
-        // 注入脚本里的"关闭"按钮
+        // 注入脚本里的"关闭"按钮 / Esc → 关窗。close 只是投递消息到事件循环，
+        // 不会阻塞，可以就地调用。
         if url.contains("ytdlp-login-close") {
             let _ = webview.close();
             return;
         }
         if url.contains("ytdlp-login-done") {
+            // 本回调运行在主线程；handle_login_done 内部的 with_webview 需要回到
+            // 主线程执行并等待结果 —— 就地调用会形成"主线程等自己"的自锁，
+            // 登录窗随即永久卡死（点 × 无反应）。必须丢到子线程去等。
             let app = webview.app_handle().clone();
-            if let Some(win) = app.get_webview_window("ytdlp-login") {
-                handle_login_done(&win, &host2, &url);
-            }
+            let host = host2.clone();
+            std::thread::spawn(move || {
+                if let Some(win) = app.get_webview_window("ytdlp-login") {
+                    handle_login_done(&win, &host, &url);
+                }
+            });
         }
     })
     .build()
@@ -73,7 +92,12 @@ fn handle_login_done(win: &tauri::WebviewWindow, host: &str, url: &str) {
         let _ = win.with_webview(move |webview| {
             let _ = tx.send(crate::login_win::fetch_cookies_com(&webview, &host_owned));
         });
-        let got = rx.recv().ok().flatten();
+        // 兜底超时：CookieManager 回调不返回时不要永久挂起，直接走下面的
+        // URL 携带 cookie 回退路径。
+        let got = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .ok()
+            .flatten();
         if let Some(cookies) = got {
             if !cookies.is_empty() {
                 let _ = save_cookies(app.clone(), host.to_string(), cookies);
@@ -131,17 +155,29 @@ fn parse_cookie_header(s: &str) -> Vec<(String, String)> {
 }
 
 /// 注入脚本：顶部中心"登录完成"按钮 + 提示条 + SPA 800ms 保活重建（DL-05）。
+///
+/// 三个要点：
+/// - 关闭手段三选一（右上角 ×、提示条内"关闭"、Esc），页面异常时也能退出；
+/// - `ensure` 每 800ms 重建被站点框架清掉的 UI，自身元素还在时立即返回，不会重复插入；
+/// - `failHint` 的判据是"body 里除本脚本插入的元素外没有其它元素"。
+///   早期实现写的是 `body.childElementCount === 0`，而脚本自己就会往 body 插
+///   元素，该条件恒为假 —— 提示条从未生效过。
 fn login_inject_script() -> String {
     r#"
 (function () {
   'use strict';
+  var CLOSE_URL = 'http://127.0.0.1/ytdlp-login-close';
+  function closeWin() { window.location.href = CLOSE_URL; }
+  function isOwn(el) { return (el.id || '').indexOf('ytdlp-') === 0; }
   function ensure() {
     if (document.getElementById('ytdlp-login-bar')) { return; }
+    var root = document.body || document.documentElement;
+    if (!root) { return; }
     var bar = document.createElement('div');
     bar.id = 'ytdlp-login-bar';
     bar.setAttribute('style',
       'position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:2147483647;' +
-      'display:flex;flex-direction:column;align-items:center;gap:4px;' +
+      'display:flex;flex-direction:column;align-items:center;gap:6px;' +
       'padding:6px 16px 8px;background:rgba(15,118,110,0.96);border-radius:0 0 10px 10px;' +
       'box-shadow:0 2px 10px rgba(0,0,0,0.35);font-family:system-ui,sans-serif;');
     var btn = document.createElement('button');
@@ -157,11 +193,20 @@ fn login_inject_script() -> String {
     };
     var hint = document.createElement('div');
     hint.id = 'ytdlp-login-hint';
-    hint.textContent = '登录完成后点击上方"登录完成"按钮保存 Cookie';
+    hint.textContent = '登录完成后点"登录完成"保存 Cookie；Esc 可关闭本窗';
     hint.setAttribute('style', 'font-size:12px;color:rgba(255,255,255,0.9);');
+    // 提示条内的关闭按钮：页面异常/空白时也能退出
+    var barClose = document.createElement('button');
+    barClose.id = 'ytdlp-login-bar-close';
+    barClose.textContent = '关闭';
+    barClose.setAttribute('style',
+      'border:none;cursor:pointer;font-size:12px;color:#fff;' +
+      'background:rgba(255,255,255,0.20);padding:4px 14px;border-radius:5px;');
+    barClose.onclick = closeWin;
     bar.appendChild(btn);
     bar.appendChild(hint);
-    // 右上角关闭按钮（解决 WebView2 卡死关不掉）
+    bar.appendChild(barClose);
+    // 右上角关闭按钮（固定在视口右上角，不受站点 DOM 改写影响）
     var closeBtn = document.createElement('button');
     closeBtn.id = 'ytdlp-login-close';
     closeBtn.textContent = '×';
@@ -169,27 +214,33 @@ fn login_inject_script() -> String {
       'position:fixed;top:6px;right:10px;z-index:2147483647;' +
       'width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;' +
       'font-size:18px;font-weight:700;color:#fff;background:rgba(185,28,28,0.9);');
-    closeBtn.onclick = function () {
-      window.location.href = 'http://127.0.0.1/ytdlp-login-close';
-    };
-    (document.body || document.documentElement).appendChild(closeBtn);
-    var root = document.body || document.documentElement;
+    closeBtn.onclick = closeWin;
+    root.appendChild(closeBtn);
     root.appendChild(bar);
   }
   ensure();
   setInterval(ensure, 800);
+  // Esc 关闭（每个文档只注册一次；新文档会重新执行本脚本）
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' || e.keyCode === 27) { closeWin(); }
+  }, true);
   function failHint() {
     if (document.getElementById('ytdlp-fail-hint')) { return; }
-    if (document.readyState === 'complete' && document.body && document.body.childElementCount === 0) {
-      var el = document.createElement('div');
-      el.id = 'ytdlp-fail-hint';
-      el.textContent = '页面加载失败：登录窗走系统代理，请先在代理软件中开启"系统代理"后重试，或点右上角 × 关闭';
-      el.setAttribute('style',
-        'position:fixed;left:0;right:0;bottom:0;z-index:2147483646;' +
-        'background:#7f1d1d;color:#fff;font-family:system-ui,sans-serif;font-size:13px;' +
-        'padding:10px 16px;text-align:center;');
-      (document.body || document.documentElement).appendChild(el);
+    if (document.readyState !== 'complete' || !document.body) { return; }
+    var kids = document.body.children;
+    var foreign = 0;
+    for (var i = 0; i < kids.length; i++) {
+      if (!isOwn(kids[i])) { foreign++; }
     }
+    if (foreign > 0) { return; }
+    var el = document.createElement('div');
+    el.id = 'ytdlp-fail-hint';
+    el.textContent = '页面似乎没有加载出来：登录窗跟随系统代理，请确认代理软件已开启"系统代理"后重试；也可按 Esc 或点右上角 × 关闭本窗。';
+    el.setAttribute('style',
+      'position:fixed;left:0;right:0;bottom:0;z-index:2147483646;' +
+      'background:#7f1d1d;color:#fff;font-family:system-ui,sans-serif;font-size:13px;' +
+      'padding:10px 16px;text-align:center;');
+    (document.body || document.documentElement).appendChild(el);
   }
   setInterval(failHint, 800);
 })();
@@ -231,5 +282,22 @@ mod tests {
         assert!(s.contains("ytdlp-login-bar"));
         assert!(s.contains("ytdlp-login-hint"));
         assert!(s.contains("登录完成"));
+        // 三种关闭手段都在：右上角 ×、条内"关闭"、Esc
+        assert!(s.contains("ytdlp-login-close"));
+        assert!(s.contains("ytdlp-login-bar-close"));
+        assert!(s.contains("Escape"));
+        // 空白检测判据不能再依赖 body.childElementCount ——
+        // 脚本自己会往 body 插元素，该条件恒为假（旧实现的 bug）
+        assert!(!s.contains("childElementCount === 0"));
+        assert!(s.contains("isOwn"));
+    }
+
+    #[test]
+    fn login_user_agent_is_plain_desktop_chrome() {
+        // 覆盖 WebView2 默认 UA：不应带 Edg/ 或 WebView2 标识
+        assert!(LOGIN_USER_AGENT.contains("Windows NT"));
+        assert!(LOGIN_USER_AGENT.contains("Chrome/"));
+        assert!(!LOGIN_USER_AGENT.contains("Edg/"));
+        assert!(!LOGIN_USER_AGENT.contains("WebView2"));
     }
 }
