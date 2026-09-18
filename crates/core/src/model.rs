@@ -417,7 +417,12 @@ impl MediaItem {
             rot_angle: RotAngle::ZERO,
             format_id: None,
             audio_only: false,
-            updated_at: String::new(),
+            // 创建即打时间戳：前端列表按 updated_at 降序（最新的在上），
+            // 空串会被排到末尾（历史 bug：普通条目从未赋值，新条目永远沉底）
+            updated_at: crate::timefmt::datetime_str(
+                crate::timefmt::now_secs(),
+                crate::timefmt::local_offset_secs(),
+            ),
         }
     }
 
@@ -832,5 +837,15 @@ mod tests {
         assert!(ItemKind::UrlTask.is_download_source());
         assert!(!ItemKind::LocalFile.is_download_source());
         assert!(!ItemKind::TranscodeOut.is_download_source());
+    }
+
+    #[test]
+    fn new_stamps_updated_at() {
+        // 前端列表按 updated_at 降序排"最新的在上"：创建即必须有时间戳，
+        // 空串在降序排序里永远沉底（历史 bug：普通条目从未赋值）
+        let it = MediaItem::from_url("https://example.com/a".into());
+        assert_eq!(it.updated_at.len(), 19); // YYYY-MM-DD HH:MM:SS
+        assert_eq!(&it.updated_at[4..5], "-");
+        assert_eq!(&it.updated_at[10..11], " ");
     }
 }
