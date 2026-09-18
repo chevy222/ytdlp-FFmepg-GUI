@@ -244,6 +244,7 @@
     <span class="sp"></span>
     <span id="depYt" class="dep bad">yt-dlp …</span>
     <span id="depFfmpeg" class="dep bad">ffmpeg …</span>
+    <span id="depFfprobe" class="dep bad">ffprobe …</span>
     <span id="depDeno" class="dep bad">deno …</span>
     <button id="btnClearTemp" title="清理 temp 残留">清理临时文件</button>
   </div>
@@ -890,8 +891,8 @@ function setCfg(path,val){
 }
 function refreshDeps(){
   INVOKE('probe_dependencies').then(list=>{
-    const map={yt_dlp:'depYt','yt-dlp':'depYt',ffmpeg:'depFfmpeg',ffprobe:'depFfmpeg',deno:'depDeno'};
-    const elById={depYt:document.getElementById('depYt'),depFfmpeg:document.getElementById('depFfmpeg'),depDeno:document.getElementById('depDeno')};
+    const map={yt_dlp:'depYt','yt-dlp':'depYt',ffmpeg:'depFfmpeg',ffprobe:'depFfprobe',deno:'depDeno'};
+    const elById={depYt:document.getElementById('depYt'),depFfmpeg:document.getElementById('depFfmpeg'),depFfprobe:document.getElementById('depFfprobe'),depDeno:document.getElementById('depDeno')};
     list.forEach(t=>{
       const el=elById[map[t.tool]]; if(!el)return;
       el.className='dep '+(t.ok?'ok':'bad');
