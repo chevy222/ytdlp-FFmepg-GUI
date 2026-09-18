@@ -32,14 +32,7 @@ pub fn open_login(app: &AppHandle, host: &str, url: &str) -> Result<(), String> 
     }
     let script = login_inject_script();
     let host2 = host.to_string();
-    let url_owned = url.to_string();
-    // 按站点分流给登录窗配置代理（与 yt-dlp 解析一致的白名单：勾选的站点才走代理）
-    let proxy_arg = {
-        let state = app.state::<crate::state::AppState>();
-        let cfg = state.config.lock().unwrap().clone();
-        cfg.network.resolve_proxy(&url_owned).map(|p| format!("--proxy-server={}", p))
-    };
-    let mut builder = WebviewWindowBuilder::new(
+    WebviewWindowBuilder::new(
         app,
         "ytdlp-login",
         WebviewUrl::External(url.parse().map_err(|e| format!("无效登录 URL：{}", e))?),
@@ -57,13 +50,9 @@ pub fn open_login(app: &AppHandle, host: &str, url: &str) -> Result<(), String> 
                 handle_login_done(&win, &host2, &url);
             }
         }
-    });
-    if let Some(pa) = proxy_arg {
-        builder = builder.additional_browser_args(&pa);
-    }
-    builder
-        .build()
-        .map_err(|e| format!("打开登录窗口失败：{}", e))?;
+    })
+    .build()
+    .map_err(|e| format!("打开登录窗口失败：{}", e))?;
     Ok(())
 }
 
@@ -175,7 +164,7 @@ fn login_inject_script() -> String {
     if (document.readyState === 'complete' && document.body && document.body.childElementCount === 0) {
       var el = document.createElement('div');
       el.id = 'ytdlp-fail-hint';
-      el.textContent = '页面加载失败：请检查代理是否运行、该站点是否已勾选走代理。可点右上角 × 或按 Esc 关闭本窗口';
+      el.textContent = '页面加载失败：登录窗走系统代理，请先在代理软件中开启"系统代理"后重试，或点右上角 × 关闭';
       el.setAttribute('style',
         'position:fixed;left:0;right:0;bottom:0;z-index:2147483646;' +
         'background:#7f1d1d;color:#fff;font-family:system-ui,sans-serif;font-size:13px;' +
