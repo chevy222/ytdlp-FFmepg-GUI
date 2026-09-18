@@ -9,8 +9,12 @@ pub fn save_remote_thumb(url: &str, dest: &Path) -> Result<(), String> {
     ensure_parent(dest).map_err(|e| e.to_string())?;
     let tmp = dest.with_extension("tmp.jpg");
     let tmp_str = tmp.to_string_lossy().into_owned();
-    let output = std::process::Command::new("curl")
-        .args(["-L", "--fail", "-sS", "-o", &tmp_str, url])
+    let mut cmd = std::process::Command::new("curl");
+    cmd.args(["-L", "--fail", "-sS", "-o", &tmp_str, url]);
+    // GUI 程序启动控制台子进程会弹出一个黑窗（一闪而过）；这里与其它调用点
+    // 保持一致，显式隐藏控制台。
+    crate::exec::hide_console(&mut cmd);
+    let output = cmd
         .output()
         .map_err(|e| format!("无法调用 curl：{e}"))?;
     if !output.status.success() || !tmp.is_file() {

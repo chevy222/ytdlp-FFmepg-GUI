@@ -422,6 +422,13 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
         cookies_file: netscape,
         sections,
         js_runtime,
+        // ffmpeg 位置（§3.6 依赖）：合并容器、嵌入封面、时间范围裁剪
+        // （--download-sections 帮助里写明 "Needs ffmpeg"）都要用 ffmpeg，
+        // 而 yt-dlp 只在 PATH 与自身目录找 —— 托管模式（tools/）必须显式传入。
+        ffmpeg_path: resolver
+            .resolve(ytdlp_core::exec::Tool::Ffmpeg)
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned()),
     };
 
     let app2 = app.clone();

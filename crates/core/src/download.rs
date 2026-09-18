@@ -40,6 +40,10 @@ pub struct DownloadParams {
     /// yt-dlp `--js-runtimes` 取值（如 `deno:C:\tools\deno.exe`）。
     /// YouTube 组件必需；留空表示交给 yt-dlp 自行探测 PATH。
     pub js_runtime: Option<String>,
+    /// yt-dlp `--ffmpeg-location` 取值（ffmpeg 可执行文件路径）。
+    /// 合并容器、嵌入封面、时间范围裁剪、音轨提取都依赖 ffmpeg，而 yt-dlp
+    /// 默认只在 PATH 与自身目录查找；托管模式（`<exe 同级>\tools\`）必须显式传入。
+    pub ffmpeg_path: Option<String>,
 }
 
 /// 文件名模板 → yt-dlp 输出模板（DL-10）。
@@ -153,6 +157,15 @@ pub fn build_args(url: &str, p: &DownloadParams, cfg: &DownloadConfig) -> Vec<St
         if !rt.is_empty() {
             args.push("--js-runtimes".into());
             args.push(rt.clone());
+        }
+    }
+    // ffmpeg 位置（§3.6 依赖）：合并容器（--merge-output-format）、嵌入封面、
+    // 时间范围裁剪（--download-sections，帮助里写明 "Needs ffmpeg"）、音轨提取
+    // 都依赖 ffmpeg。yt-dlp 默认只在 PATH 与自身目录查找，托管模式下必须显式传入。
+    if let Some(ff) = &p.ffmpeg_path {
+        if !ff.is_empty() {
+            args.push("--ffmpeg-location".into());
+            args.push(ff.clone());
         }
     }
     // 其他
@@ -652,6 +665,7 @@ mod tests {
             cookies_file: None,
             sections: None,
             js_runtime: None,
+            ffmpeg_path: None,
         }
     }
 
@@ -714,6 +728,21 @@ mod tests {
         let joined = build_args("u", &p, &DownloadConfig::default()).join(" ");
         assert!(
             joined.contains("--js-runtimes deno:C:\\tools\\deno.exe"),
+            "{}",
+            joined
+        );
+    }
+
+    #[test]
+    fn build_args_passes_ffmpeg_location() {
+        let mut p = params();
+        assert!(!build_args("u", &p, &DownloadConfig::default())
+            .join(" ")
+            .contains("--ffmpeg-location"));
+        p.ffmpeg_path = Some("C:\\tools\\ffmpeg.exe".into());
+        let joined = build_args("u", &p, &DownloadConfig::default()).join(" ");
+        assert!(
+            joined.contains("--ffmpeg-location C:\\tools\\ffmpeg.exe"),
             "{}",
             joined
         );
