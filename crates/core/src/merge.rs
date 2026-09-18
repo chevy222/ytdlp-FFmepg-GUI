@@ -250,6 +250,8 @@ fn run_piped_progress(
 ) -> Result<()> {
     use std::io::{BufRead, Read};
     use std::process::Stdio;
+    // 合并链路的所有 ffmpeg 执行（段转码/拼接/归一化）都走这里：命令行统一入日志
+    on_log(crate::exec::display_command("ffmpeg", &args));
     let mut cmd = resolver.command(Tool::Ffmpeg)?;
     cmd.args(&args);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -317,7 +319,7 @@ pub fn run_merge(
     let mut metas = Vec::with_capacity(params.inputs.len());
     on_log("探测输入参数…".into());
     for p in &params.inputs {
-        let m = crate::download::probe_output(resolver, p)?;
+        let m = crate::download::probe_output(resolver, p, |l| on_log(l))?;
         metas.push(m);
     }
     let total = total_duration(&metas);
@@ -469,7 +471,7 @@ fn post_normalize(
     cancel: &Arc<AtomicBool>,
     on_log: &mut dyn FnMut(String),
 ) -> Result<PathBuf> {
-    let meta = crate::download::probe_output(resolver, input)?;
+    let meta = crate::download::probe_output(resolver, input, |l| on_log(l))?;
     let Some(max_v) = meta.audio_volume.max_volume_db else {
         return Ok(input.to_path_buf());
     };

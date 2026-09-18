@@ -410,10 +410,11 @@ fn run_probe(app: AppHandle, id: String) {
             netscape.as_deref(),
             &network,
             playlist_on,
+            |l| log_item(&app, &id, l),
         )
     } else {
         let path = item.path.clone().unwrap_or_default();
-        probe::probe_local(&resolver, Path::new(&path)).map(|p| {
+        probe::probe_local(&resolver, Path::new(&path), |l| log_item(&app, &id, l)).map(|p| {
             let mut mp = p;
             let title = item.title.clone();
             mp.meta.title = Some(title);
@@ -470,7 +471,12 @@ fn run_probe(app: AppHandle, id: String) {
                             )
                         }
                     } else if let Some(p) = local_path {
-                        ytdlp_core::thumbs::extract_thumb(&resolver2, std::path::Path::new(&p), &dest)
+                        ytdlp_core::thumbs::extract_thumb(
+                            &resolver2,
+                            std::path::Path::new(&p),
+                            &dest,
+                            &mut |l| log_item(&app2, &id2, l),
+                        )
                     } else {
                         Ok(())
                     };
@@ -629,20 +635,30 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
 
     let app2 = app.clone();
     let id2 = id.clone();
-    let prog_result = run_download(&resolver, &url, &params, &cfg, &cancel, move |p| {
-        update_item(&app2, &id2, |it| {
-            it.percent = p.percent;
-            if let Some(s) = p.speed {
-                it.speed = Some(s);
-            }
-            if let Some(e) = p.eta {
-                it.eta = Some(e);
-            }
-            if let Some(f) = p.file {
-                it.file = Some(f);
-            }
-        });
-    });
+    let app3 = app.clone();
+    let id3 = id.clone();
+    let prog_result = run_download(
+        &resolver,
+        &url,
+        &params,
+        &cfg,
+        &cancel,
+        move |p| {
+            update_item(&app2, &id2, |it| {
+                it.percent = p.percent;
+                if let Some(s) = p.speed {
+                    it.speed = Some(s);
+                }
+                if let Some(e) = p.eta {
+                    it.eta = Some(e);
+                }
+                if let Some(f) = p.file {
+                    it.file = Some(f);
+                }
+            });
+        },
+        move |l| log_item(&app3, &id3, l),
+    );
 
     let mut outcome = match prog_result {
         Ok(o) => o,
@@ -684,7 +700,7 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
 
     // 产物解析（MD-06）
     if let Some(path) = &first {
-        if let Ok(meta) = probe_output(&resolver, path) {
+        if let Ok(meta) = probe_output(&resolver, path, |l| log_item(&app, &id, l)) {
             update_item(&app, &id, |it| {
                 it.meta = meta;
             });
@@ -766,6 +782,7 @@ fn finish_download(
                         &resolver2,
                         std::path::Path::new(&out_path),
                         &dest,
+                        &mut |l| log_item(&app2, &id2, l),
                     )
                     .is_ok()
                     {
@@ -1088,7 +1105,7 @@ fn finish_merge(
         });
     }
     if let Ok(out) = &result {
-        let meta = download::probe_output(&state.resolver(), out).unwrap_or_default();
+        let meta = download::probe_output(&state.resolver(), out, |_| {}).unwrap_or_default();
         let title = out
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -1238,7 +1255,9 @@ fn expand_playlist(
     if url.is_empty() {
         return;
     }
-    match probe::list_playlist_entries(resolver, &url, cookies, network) {
+    match probe::list_playlist_entries(resolver, &url, cookies, network, |l| {
+        log_item(app, id, l)
+    }) {
         Ok(entries) => {
             let n = entries.len();
             log_item(app, id, format!("播放列表展开：{n} 集"));
@@ -1387,7 +1406,7 @@ fn finish_transcode(
     });
     // 成功：产物作为新条目回到列表（TC-11）
     if let Ok(out) = &result {
-        let meta = probe_output(&state.resolver(), out).unwrap_or_default();
+        let meta = probe_output(&state.resolver(), out, |_| {}).unwrap_or_default();
         let title = out
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())

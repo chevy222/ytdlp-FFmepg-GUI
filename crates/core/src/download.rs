@@ -366,6 +366,7 @@ pub struct DownloadOutcome {
 }
 
 /// 执行下载（阻塞；逐行回调进度；取消置位后杀进程树）。
+/// `on_log`：接收实际执行的完整 yt-dlp 命令行（条目日志展示用）。
 pub fn run_download(
     resolver: &ToolResolver,
     url: &str,
@@ -373,8 +374,10 @@ pub fn run_download(
     cfg: &DownloadConfig,
     cancel: &Arc<AtomicBool>,
     mut on_progress: impl FnMut(Progress),
+    mut on_log: impl FnMut(String),
 ) -> Result<DownloadOutcome> {
     let args = build_args(url, p, cfg);
+    on_log(crate::exec::display_command("yt-dlp", &args));
     let mut cmd = resolver.command(Tool::YtDlp)?;
     cmd.args(&args);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -503,7 +506,7 @@ pub fn post_process(
     mut on_log: impl FnMut(String),
 ) -> Result<PathBuf> {
     // 先解析产物（MD-06 与后处理共用一次探测）
-    let probe = probe::probe_local(resolver, input)
+    let probe = probe::probe_local(resolver, input, |l| on_log(l))
         .map_err(|e| CoreError::Io(std::io::Error::other(format!("产物解析失败：{}", e))))?;
     let meta = &probe.meta;
 
@@ -621,6 +624,7 @@ pub fn post_process(
     args.push("+faststart".into());
     args.push("-y".into());
     args.push(out.to_string_lossy().into_owned());
+    on_log(crate::exec::display_command("ffmpeg", &args));
 
     let mut cmd = resolver.command(Tool::Ffmpeg)?;
     cmd.args(&args);
@@ -707,8 +711,13 @@ pub fn is_video_file(p: &Path) -> bool {
 }
 
 /// 解析产物元数据（MD-06 下载完成产物解析；与本地文件相同链路）。
-pub fn probe_output(resolver: &ToolResolver, path: &Path) -> Result<MediaMeta> {
-    let p = probe::probe_local(resolver, path)
+/// `on_log`：ffprobe/ffmpeg 命令行回传（条目日志展示用；不关心可传 no-op）。
+pub fn probe_output(
+    resolver: &ToolResolver,
+    path: &Path,
+    mut on_log: impl FnMut(String),
+) -> Result<MediaMeta> {
+    let p = probe::probe_local(resolver, path, |l| on_log(l))
         .map_err(|e| CoreError::Io(std::io::Error::other(format!("产物解析失败：{}", e))))?;
     Ok(p.meta)
 }

@@ -32,7 +32,7 @@
 | UL-11 | 封面缩略图：URL 条目取远程缩略图（系统 `curl` 下载，直连失败自动按设置代理重试一次），本地文件/下载产物用 ffmpeg 抽帧（`-ss 0.5`，宽 ≤360），统一落在 `config/cache/thumbs/<条目id>.jpg`；下载完成时条目仍无封面则对最终产物抽帧兜底（已有封面不覆盖）；解析中（Probing）显示"影"占位 | `thumbs.rs`、`commands.rs::finish_download` |
 | UL-16 | **工具栏不放品牌 logo/应用名称区块**（左上角不显示 logo 图标 +"影栈 | 本地视频工作台"之类）——工具栏直接从 URL 输入框开始，保持紧凑。应用图标只出现在窗口标题栏/任务栏/欢迎页中央，不在工具栏重复占位 | `ui/index.html::toolbar` |
 | UL-12 | 手动旋转：缩略图上的顺/逆时针箭头 → 角度 0/90/180/270 随条目保存（`rot_angle`，设置即落盘，重启不丢），转码时生效；角度 ≠ 0 时缩略图右上角显示角标。旋转按钮只对**文件已存在**的条目显示：本地文件/转码产物/合并产物解析完即可设，URL 条目要等下载产物落地（后处理中起）才出现——`rot_angle` 是转码参数，下载中显示只会误导 | `commands.rs::rot_item`、`model.rs::RotAngle`、`ui/index.html::rowHtml` |
-| UL-13 | 每条目独立日志（最近 300 行），弹窗可查看/复制/仅清空视图 | `model.rs::push_log`、`ui/index.html::openLog` |
+| UL-13 | 每条目独立日志（最近 300 行），弹窗可查看/复制/仅清空视图。yt-dlp / ffmpeg / ffprobe 实际执行的完整命令行（参数经引号转义、可直接复制执行）在启动前写入条目日志：yt-dlp 解析/下载、ffprobe 本地与产物解析、ffmpeg 转码/后处理/合并/归一化/抽帧全覆盖 | `exec.rs::display_command`、`probe.rs`、`download.rs`、`transcode.rs`、`merge.rs::run_piped_progress`、`thumbs.rs` |
 | UL-14 | 底部状态栏：左端 `运行中 n/m（并发上限）`——n = 处于下载中/后处理中/转码中/合并中的条目数，m = `general.concurrency`（悬停显示口径）；右端四个工具自检徽标，解析到可执行文件且版本可读时显示 `工具 版本`，解析到但版本探测失败显示 `工具（已找到）`，未解析到显示 `工具（未找到）`（悬停显示解析到的绝对路径） | `ui/index.html::renderQueue`/`refreshDeps`、`commands.rs::probe_dependencies`、`exec.rs::parse_version_line` |
 | UL-15 | 列表排序：按 `updated_at` **降序**（最新的在最上）；条目创建即打时间戳（`YYYY-MM-DD HH:MM:SS` 本地时区），旧版 history 中无时间戳的条目排在最末、相对顺序不变 | `model.rs::MediaItem::new`、`ui/index.html::render` |
 

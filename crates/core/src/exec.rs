@@ -370,10 +370,24 @@ pub fn tool_version(resolver: &ToolResolver, tool: Tool) -> Option<String> {
     tool_version_at(tool, &resolver.resolve(tool).ok()?)
 }
 
+/// 把程序名与参数拼成一条可读、可复制、可直接粘贴执行的单行命令。
+/// 含空白/引号/空串的参数加双引号并转义内部引号，其余原样。
+pub fn display_command(program: &str, args: &[String]) -> String {
+    let mut s = program.to_string();
+    for a in args {
+        if a.is_empty() || a.chars().any(|c| c.is_whitespace() || c == '"') {
+            s.push_str(&format!(" \"{}\"", a.replace('"', "\\\"")));
+        } else {
+            s.push(' ');
+            s.push_str(a);
+        }
+    }
+    s
+}
+
 /// Windows 下隐藏子进程控制台窗口（CREATE_NO_WINDOW），避免 GUI 程序
 /// 调用 yt-dlp/ffmpeg 等控制台工具时黑窗口闪烁。
-pub fn hide_console(cmd: &mut std::process::Command) {
-    #[cfg(windows)]
+pub fn hide_console(cmd: &mut std::process::Command) {    #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;

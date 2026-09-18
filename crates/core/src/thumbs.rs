@@ -48,15 +48,30 @@ fn fetch_to(url: &str, dest: &Path, proxy: Option<&str>) -> Result<(), String> {
 }
 
 /// 用 ffmpeg 从视频文件抽取一帧做封面（-ss 0.5 首帧附近，等比缩放 ≤360 宽）。
-pub fn extract_thumb(resolver: &ToolResolver, src: &Path, dest: &Path) -> Result<(), String> {
+/// `on_log`：实际执行的 ffmpeg 命令行回传（条目日志展示用）。
+pub fn extract_thumb(
+    resolver: &ToolResolver,
+    src: &Path,
+    dest: &Path,
+    on_log: &mut dyn FnMut(String),
+) -> Result<(), String> {
     ensure_parent(dest).map_err(|e| e.to_string())?;
+    let args: Vec<String> = ["-y", "-ss", "0.5", "-i"]
+        .iter()
+        .map(|s| s.to_string())
+        .chain(std::iter::once(src.to_string_lossy().into_owned()))
+        .chain(
+            ["-frames:v", "1", "-vf", "scale=360:-2", "-q:v", "3"]
+                .iter()
+                .map(|s| s.to_string()),
+        )
+        .chain(std::iter::once(dest.to_string_lossy().into_owned()))
+        .collect();
+    on_log(crate::exec::display_command("ffmpeg", &args));
     let mut cmd = resolver
         .command(Tool::Ffmpeg)
         .map_err(|e| e.to_string())?;
-    cmd.args(["-y", "-ss", "0.5", "-i"])
-        .arg(src)
-        .args(["-frames:v", "1", "-vf", "scale=360:-2", "-q:v", "3"])
-        .arg(dest);
+    cmd.args(&args);
     let child = ChildGuard::spawn(&mut cmd).map_err(|e| e.to_string())?;
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
     if !out.status.success() || !dest.is_file() {
@@ -94,7 +109,24 @@ mod tests {
             &resolver,
             Path::new("no-such-file.mp4"),
             Path::new("/tmp/no-thumb.jpg"),
+            &mut |_| {},
         );
         assert!(err.is_err(), "源不存在应报错");
+    }
+
+    #[test]
+    fn display_command_quotes_spaces() {
+        // 含空格/引号的参数必须加引号，否则复制出去的命令不可直接执行
+        assert_eq!(
+            crate::exec::display_command("yt-dlp", &["-J".into(), "a b.mp4".into()]),
+            "yt-dlp -J \"a b.mp4\""
+        );
+        assert_eq!(
+            crate::exec::display_command(
+                "ffmpeg",
+                &["-i".into(), "in 1.mp4".into(), "-y".into(), "out.mp4".into()]
+            ),
+            "ffmpeg -i \"in 1.mp4\" -y out.mp4"
+        );
     }
 }

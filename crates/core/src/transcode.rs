@@ -465,6 +465,10 @@ fn run_transcode_once(
         out.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
         params.encoder_mode
     ));
+    // 实际执行的完整命令（含输出路径，build_args 不含）
+    let mut full = args.clone();
+    full.push(out.to_string_lossy().into_owned());
+    on_log(crate::exec::display_command("ffmpeg", &full));
 
     let mut cmd = resolver.command(Tool::Ffmpeg)?;
     cmd.args(&args);

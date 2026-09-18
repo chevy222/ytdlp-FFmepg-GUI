@@ -7,7 +7,7 @@
 
 use std::io::BufRead;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde_json::Value;
 
@@ -66,6 +66,32 @@ pub struct PlaylistEntry {
     pub title: String,
 }
 
+/// 组装 yt-dlp 公共参数（`-J` 家族共用）：extra 前缀 + js 运行时 + cookies + 代理 + URL。
+/// 命令行展示（`display_command`）与 Command 构造共用这一份，保证日志与实际执行一致。
+fn ytdlp_args(
+    resolver: &ToolResolver,
+    url: &str,
+    cookies_file: Option<&Path>,
+    network: &NetworkConfig,
+    extra: &[&str],
+) -> Vec<String> {
+    let mut args: Vec<String> = extra.iter().map(|s| s.to_string()).collect();
+    if let Ok(deno) = resolver.resolve(Tool::Deno) {
+        args.push("--js-runtimes".into());
+        args.push(format!("deno:{}", deno.to_string_lossy()));
+    }
+    if let Some(cf) = cookies_file {
+        args.push("--cookies".into());
+        args.push(cf.to_string_lossy().into_owned());
+    }
+    if let Some(p) = network.resolve_proxy(url) {
+        args.push("--proxy".into());
+        args.push(p);
+    }
+    args.push(url.to_string());
+    args
+}
+
 /// 展开播放列表（yt-dlp -J --flat-playlist）：快速拿每集 URL 与标题，
 /// 命令层据此逐条平铺进统一列表。
 pub fn list_playlist_entries(
@@ -73,20 +99,21 @@ pub fn list_playlist_entries(
     url: &str,
     cookies_file: Option<&Path>,
     network: &NetworkConfig,
+    mut on_log: impl FnMut(String),
 ) -> std::result::Result<Vec<PlaylistEntry>, ProbeFailure> {
+    let args = ytdlp_args(
+        resolver,
+        url,
+        cookies_file,
+        network,
+        &["-J", "--flat-playlist", "--no-warnings"],
+    );
+    on_log(crate::exec::display_command("yt-dlp", &args));
     let mut cmd = resolver.command(Tool::YtDlp).map_err(|e| ProbeFailure {
         kind: ProbeErrorKind::Failed,
         message: e.to_string(),
     })?;
-    cmd.arg("-J").arg("--flat-playlist").arg("--no-warnings");
-    push_js_runtime(&mut cmd, resolver);
-    if let Some(cf) = cookies_file {
-        cmd.arg("--cookies").arg(cf);
-    }
-    if let Some(p) = network.resolve_proxy(url) {
-        cmd.arg("--proxy").arg(p);
-    }
-    cmd.arg(url);
+    cmd.args(&args);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let guard = ChildGuard::spawn(&mut cmd).map_err(|e| ProbeFailure {
         kind: ProbeErrorKind::Failed,
@@ -142,13 +169,6 @@ pub struct ProbeFailure {
 /// yt-dlp 的 YouTube 组件需要 JS 运行时，默认**只认 PATH 里的 deno**；
 /// 依赖配置/`tools\` 托管目录里的 deno 必须显式传给它，否则即使依赖自检通过，
 /// YouTube 仍会因缺 JS 运行时失败。
-fn push_js_runtime(cmd: &mut Command, resolver: &ToolResolver) {
-    if let Ok(deno) = resolver.resolve(Tool::Deno) {
-        cmd.arg("--js-runtimes");
-        cmd.arg(format!("deno:{}", deno.to_string_lossy()));
-    }
-}
-
 impl std::fmt::Display for ProbeFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.message)
@@ -157,31 +177,27 @@ impl std::fmt::Display for ProbeFailure {
 
 /// URL 解析（yt-dlp -J）。
 /// `cookies_file`：Netscape 临时文件路径（None 则不带）。
+/// `on_log`：接收实际执行的完整命令行（条目日志展示用）。
 pub fn probe_url(
     resolver: &ToolResolver,
     url: &str,
     cookies_file: Option<&Path>,
     network: &NetworkConfig,
     playlist: bool,
+    mut on_log: impl FnMut(String),
 ) -> std::result::Result<UrlProbe, ProbeFailure> {
+    let extra: &[&str] = if playlist {
+        &["-J", "--no-warnings", "--yes-playlist"]
+    } else {
+        &["-J", "--no-warnings", "--no-playlist"]
+    };
+    let args = ytdlp_args(resolver, url, cookies_file, network, extra);
+    on_log(crate::exec::display_command("yt-dlp", &args));
     let mut cmd = resolver.command(Tool::YtDlp).map_err(|e| ProbeFailure {
         kind: ProbeErrorKind::Failed,
         message: e.to_string(),
     })?;
-    cmd.arg("-J").arg("--no-warnings");
-    push_js_runtime(&mut cmd, resolver);
-    if playlist {
-        cmd.arg("--yes-playlist");
-    } else {
-        cmd.arg("--no-playlist");
-    }
-    if let Some(cf) = cookies_file {
-        cmd.arg("--cookies").arg(cf);
-    }
-    if let Some(p) = network.resolve_proxy(url) {
-        cmd.arg("--proxy").arg(p);
-    }
-    cmd.arg(url);
+    cmd.args(&args);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let guard = ChildGuard::spawn(&mut cmd).map_err(|e| ProbeFailure {
@@ -207,6 +223,7 @@ pub fn probe_url(
 pub fn probe_local(
     resolver: &ToolResolver,
     path: &Path,
+    mut on_log: impl FnMut(String),
 ) -> std::result::Result<LocalProbe, ProbeFailure> {
     if !path.is_file() {
         return Err(ProbeFailure {
@@ -215,11 +232,7 @@ pub fn probe_local(
         });
     }
     // 1) ffprobe 基础信息
-    let mut cmd = resolver.command(Tool::Ffprobe).map_err(|e| ProbeFailure {
-        kind: ProbeErrorKind::Failed,
-        message: e.to_string(),
-    })?;
-    cmd.args([
+    let args: Vec<String> = [
         "-v",
         "error",
         "-print_format",
@@ -229,10 +242,19 @@ pub fn probe_local(
         // -show_data 才会输出流级 `extradata`（否则只有 extradata_size）：
         // 合并直拼判据 MG-02 需要真实 SPS/PPS 十六进制对比
         "-show_data",
-    ])
-    .arg(path)
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped());
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .chain(std::iter::once(path.to_string_lossy().into_owned()))
+    .collect();
+    on_log(crate::exec::display_command("ffprobe", &args));
+    let mut cmd = resolver.command(Tool::Ffprobe).map_err(|e| ProbeFailure {
+        kind: ProbeErrorKind::Failed,
+        message: e.to_string(),
+    })?;
+    cmd.args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let guard = ChildGuard::spawn(&mut cmd).map_err(|e| ProbeFailure {
         kind: ProbeErrorKind::Failed,
         message: format!("启动 ffprobe 失败：{}", e),
@@ -256,7 +278,7 @@ pub fn probe_local(
 
     // 2) volumedetect（有音频流时）
     if meta.acodec.is_some() {
-        if let Ok(vol) = probe_volume(resolver, path) {
+        if let Ok(vol) = probe_volume(resolver, path, &mut on_log) {
             meta.audio_volume = vol;
         }
     }
@@ -264,11 +286,24 @@ pub fn probe_local(
 }
 
 /// 音量探测（ffmpeg volumedetect）。
-pub fn probe_volume(resolver: &ToolResolver, path: &Path) -> Result<AudioVolume> {
+pub fn probe_volume(
+    resolver: &ToolResolver,
+    path: &Path,
+    on_log: &mut dyn FnMut(String),
+) -> Result<AudioVolume> {
+    let args: Vec<String> = ["-i"]
+        .iter()
+        .map(|s| s.to_string())
+        .chain(std::iter::once(path.to_string_lossy().into_owned()))
+        .chain(
+            ["-af", "volumedetect", "-f", "null", "-"]
+                .iter()
+                .map(|s| s.to_string()),
+        )
+        .collect();
+    on_log(crate::exec::display_command("ffmpeg", &args));
     let mut cmd = resolver.command(Tool::Ffmpeg)?;
-    cmd.args(["-i"])
-        .arg(path)
-        .args(["-af", "volumedetect", "-f", "null", "-"]);
+    cmd.args(&args);
     cmd.stdout(Stdio::null()).stderr(Stdio::piped());
     let guard = ChildGuard::spawn(&mut cmd)?;
     let out = guard.wait_with_output()?;
