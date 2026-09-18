@@ -437,14 +437,17 @@ function rotSvg(cw){
 function rowHtml(it){
   const id=esc(it.id);
   const ra=it.rot_angle; const ang=(typeof ra==='number'?ra:((ra&&ra.degrees)||0));
+  const probing = it.status==='probing';
+  const cv = probing ? '' :
+      '<div class="cv"><div class="thumb'+(ang?' rot'+(ang%360):'')+'" data-id="'+id+'">'+(it.thumb?('<img src="'+thumbSrc(it.thumb)+'" alt="">'):'<span class="ph">影</span>')+'</div>'+
+      '<span class="rotbadge'+(ang?' show':'')+'">'+ang+'°</span></div>';
+  const rots = probing ? '' :
+      '<button class="rotbtn" data-act="rotcw" data-id="'+id+'" title="顺时针">'+rotSvg(true)+'</button>'+
+      '<button class="rotbtn" data-act="rotccw" data-id="'+id+'" title="逆时针">'+rotSvg(false)+'</button>';
   return '<tr data-id="'+id+'">'+
     '<td><input type="checkbox" data-act="sel" data-id="'+id+'"'+(S.selected.has(it.id)?' checked':'')+'></td>'+
-    '<td><div class="nrow">'+
-      '<div class="cv"><div class="thumb'+(ang?' rot'+(ang%360):'')+'" data-id="'+id+'">'+(it.thumb?('<img src="'+thumbSrc(it.thumb)+'" alt="">'):'<span class="ph">影</span>')+'</div>'+
-      '<span class="rotbadge'+(ang?' show':'')+'">'+ang+'°</span></div>'+
-      '<div class="nmain"><div class="trow">'+
-        '<button class="rotbtn" data-act="rotcw" data-id="'+id+'" title="顺时针">'+rotSvg(true)+'</button>'+
-        '<button class="rotbtn" data-act="rotccw" data-id="'+id+'" title="逆时针">'+rotSvg(false)+'</button>'+
+    '<td><div class="nrow">'+cv+
+      '<div class="nmain"><div class="trow">'+rots+
         '<span class="name" title="'+esc(it.title)+'">'+esc(it.title)+'</span>'+
       '</div><div class="subline">'+subline(it)+'</div></div>'+
     '</div></td>'+
