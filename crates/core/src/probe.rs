@@ -485,6 +485,8 @@ fn classify_ytdlp_error(stderr: &str) -> ProbeFailure {
         || lower.contains("private")
         || lower.contains("log in")
         || lower.contains("members only")
+        || lower.contains("cookies are needed")
+        || lower.contains("fresh cookies")
     {
         ProbeErrorKind::NeedLogin
     } else if lower.contains("unable to download webpage")
@@ -641,6 +643,10 @@ mod tests {
         assert_eq!(e.kind, ProbeErrorKind::InvalidLink);
         let e = classify_ytdlp_error("ERROR: something else happened");
         assert_eq!(e.kind, ProbeErrorKind::Failed);
+        let e = classify_ytdlp_error(
+            "ERROR: [Douyin] 7686436507753794843: Fresh cookies (not necessarily logged in) are needed",
+        );
+        assert_eq!(e.kind, ProbeErrorKind::NeedLogin);
     }
 
     #[test]

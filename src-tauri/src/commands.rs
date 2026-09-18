@@ -1211,7 +1211,9 @@ pub fn relogin_item(app: AppHandle, id: String) -> CmdResult<()> {
         })
     };
     let host = host.ok_or("无法确定登录站点")?;
-    let login_url = login::login_url_for_host(&host).ok_or("该站点不支持内置登录")?;
+    let login_url = login::login_url_for_host(&host).ok_or_else(|| {
+        format!("站点 {host} 不支持内置登录：请在设置-Cookie 中为该站点添加 Cookie 后重试")
+    })?;
     login::open_login(&app, &host, &login_url).map_err(err_string)?;
     Ok(())
 }
