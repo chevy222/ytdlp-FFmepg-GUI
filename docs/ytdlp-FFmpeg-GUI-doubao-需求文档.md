@@ -105,7 +105,7 @@
 | 段 | 字段（默认值） |
 | --- | --- |
 | download | `max_h`=1080（后处理画质上限，短边）· `max_dl_h`=2160 · `fragments`=4 · `retries`=3 · `audio_only`=false · `playlist`=false · `embed_cover`=true · `filename_template`="纯标题" |
-| transcode | `max_w`=1920 · `max_h`=1080 · `brcap_kbps`=null（不封顶）· `br_default_kbps`=8000 · `force_encoder_mode`="auto" · `low_power`=true · `keep_cover`=true（x265 CRF 固定 23，不落配置） |
+| transcode | `max_w`=1920 · `max_h`=1080 · `brcap_kbps`=5000 · `br_default_kbps`=8000 · `force_encoder_mode`="auto" · `low_power`=true · `keep_cover`=true（x265 CRF 固定 23，不落配置） |
 | general | `default_output_dir`=null（空则用桌面）· `collision_policy`="auto_inc" · `normalize_audio`=true · `max_gain_db`=24.0 · `concurrency`=3 · `check_update`=true · `history_limit`=100（上限 200） |
 | dependencies | `yt_dlp_path` / `ffmpeg_path` / `ffprobe_path` / `deno_path` = null（留空走 PATH，填写用指定路径，含 `tools\` 托管）· `potoken_enabled`=true |
 | network | `proxy_url`=""（空 = 全部直连）· `site_proxy`={}（站点 → 是否走代理） |

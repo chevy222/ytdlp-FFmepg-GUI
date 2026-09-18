@@ -70,7 +70,7 @@ impl Default for TranscodeConfig {
         Self {
             max_w: 1920,
             max_h: 1080,
-            brcap_kbps: None,
+            brcap_kbps: Some(5000),
             force_encoder_mode: "auto".into(),
             low_power: true,
             keep_cover: true,
