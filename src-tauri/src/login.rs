@@ -4,7 +4,8 @@
 //! - 点击"登录完成"→ 跳转本地 done URL（携带 document.cookie）→ Rust 抓取保存
 //! - Windows 上优先经 WebView2 CookieManager（COM）抓取含 HttpOnly 的 Cookie；失败回退 URL 携带的 cookie
 //! - 保存后关闭登录窗并自动重解析 NeedLogin 条目
-//! - 三种关闭方式：右上角 ×、顶部提示条内"关闭"、Esc 键（都跳本地 close URL，由 Rust 关窗）
+//! - 两种关闭方式：顶部提示条内"关闭"、Esc 键（都跳本地 close URL，由 Rust 关窗；
+//!   窗口系统标题栏的 × 也可用。曾有的右上角悬浮 × 已删——提示条里已有"关闭"，重复）
 //!
 //! **两条硬约束（违反就复现"新窗口空白 + 整机卡死、关都关不掉"）**：
 //! 1. 创建窗口不能发生在主线程/同步命令里。Tauri 官方文档（`WebviewWindowBuilder::new`）：
@@ -198,8 +199,8 @@ fn parse_cookie_header(s: &str) -> Vec<(String, String)> {
 
 /// 注入脚本：顶部中心"登录完成"按钮 + 提示条 + SPA 800ms 保活重建（DL-05）。
 ///
-/// 三个要点：
-/// - 关闭手段三选一（右上角 ×、提示条内"关闭"、Esc），页面异常时也能退出；
+/// 要点：
+/// - 关闭手段两种（提示条内"关闭"、Esc），页面异常时也能退出；
 /// - `ensure` 每 800ms 重建被站点框架清掉的 UI，自身元素还在时立即返回，不会重复插入；
 /// - `failHint` 的判据是"body 里除本脚本插入的元素外没有其它元素"。
 ///   早期实现写的是 `body.childElementCount === 0`，而脚本自己就会往 body 插
@@ -248,17 +249,6 @@ fn login_inject_script() -> String {
     bar.appendChild(btn);
     bar.appendChild(hint);
     bar.appendChild(barClose);
-    // 右上角关闭按钮（固定在视口右上角，不受站点 DOM 改写影响）
-    var closeBtn = document.createElement('button');
-    closeBtn.id = 'ytdlp-login-close';
-    closeBtn.textContent = '×';
-    closeBtn.setAttribute('style',
-      'position:fixed;top:6px;right:10px;z-index:2147483647;' +
-      'width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;' +
-      'font-size:18px;font-weight:700;color:#fff;background:rgba(185,28,28,0.9);');
-    closeBtn.onclick = closeWin;
-    root.appendChild(closeBtn);
-    root.appendChild(bar);
   }
   ensure();
   setInterval(ensure, 800);
@@ -277,7 +267,7 @@ fn login_inject_script() -> String {
     if (foreign > 0) { return; }
     var el = document.createElement('div');
     el.id = 'ytdlp-fail-hint';
-    el.textContent = '页面似乎没有加载出来：登录窗跟随系统代理，请确认代理软件已开启"系统代理"后重试；也可按 Esc 或点右上角 × 关闭本窗。';
+    el.textContent = '页面似乎没有加载出来：登录窗跟随系统代理，请确认代理软件已开启"系统代理"后重试；也可按 Esc 或点上方提示条内的"关闭"退出本窗。';
     el.setAttribute('style',
       'position:fixed;left:0;right:0;bottom:0;z-index:2147483646;' +
       'background:#7f1d1d;color:#fff;font-family:system-ui,sans-serif;font-size:13px;' +
@@ -324,10 +314,12 @@ mod tests {
         assert!(s.contains("ytdlp-login-bar"));
         assert!(s.contains("ytdlp-login-hint"));
         assert!(s.contains("登录完成"));
-        // 三种关闭手段都在：右上角 ×、条内"关闭"、Esc
+        // 关闭手段两种：条内"关闭"、Esc（"ytdlp-login-close" 只剩 close URL 本身）
         assert!(s.contains("ytdlp-login-close"));
         assert!(s.contains("ytdlp-login-bar-close"));
         assert!(s.contains("Escape"));
+        // 右上角悬浮 × 已删：提示条里已有"关闭"，不再注入第二个关闭按钮
+        assert!(!s.contains("closeBtn"));
         // 空白检测判据不能再依赖 body.childElementCount ——
         // 脚本自己会往 body 插元素，该条件恒为假（旧实现的 bug）
         assert!(!s.contains("childElementCount === 0"));
