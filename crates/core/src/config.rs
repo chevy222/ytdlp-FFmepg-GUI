@@ -161,7 +161,7 @@ impl Default for DependenciesConfig {
 }
 
 /// 网络段（§3.6 网络分组：代理地址 + 站点分流）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NetworkConfig {
     #[serde(default)]
     pub proxy_url: String,
@@ -170,13 +170,42 @@ pub struct NetworkConfig {
     pub site_proxy: std::collections::HashMap<String, bool>,
 }
 
-impl Default for NetworkConfig {
-    fn default() -> Self {
-        Self {
-            proxy_url: "socks5://127.0.0.1:10808".into(),
-            site_proxy: std::collections::HashMap::new(),
+impl NetworkConfig {
+    /// 站点分流解析：返回该 URL 应使用的代理地址。
+    /// - 未配置任何分流站点：全局 proxy_url（空则直连）
+    /// - 已配置分流：命中站点且勾选 → proxy_url；其余一律直连
+    pub fn resolve_proxy(&self, url: &str) -> Option<String> {
+        if self.proxy_url.is_empty() {
+            return None;
         }
+        if self.site_proxy.is_empty() {
+            return Some(self.proxy_url.clone());
+        }
+        let host = host_of(url)?;
+        for (site, enabled) in &self.site_proxy {
+            if site_matches(site, &host) {
+                return if *enabled { Some(self.proxy_url.clone()) } else { None };
+            }
+        }
+        None
     }
+}
+
+/// 从 URL 提取小写 host（去协议/端口/路径）。
+fn host_of(url: &str) -> Option<String> {
+    let u = url.trim();
+    let after = u.split_once("://").map(|x| x.1).unwrap_or(u);
+    let host = after.split(['/', '?', '#']).next()?.split(':').next()?.to_string();
+    Some(host.to_lowercase())
+}
+
+/// 站点匹配：精确相等或子域后缀（bilibili.com 命中 www.bilibili.com）。
+fn site_matches(site: &str, host: &str) -> bool {
+    let site = site.trim().trim_start_matches('.').to_lowercase();
+    if site.is_empty() {
+        return false;
+    }
+    host == site || host.ends_with(&format!(".{site}"))
 }
 
 /// 根配置（§7.2）。
@@ -246,7 +275,7 @@ mod tests {
         assert_eq!(c.general.history_limit, 100);
         assert!(c.dependencies.potoken_enabled);
         assert!(c.dependencies.yt_dlp_path.is_none());
-        assert_eq!(c.network.proxy_url, "socks5://127.0.0.1:10808");
+        assert_eq!(c.network.proxy_url, "");
     }
 
     #[test]
@@ -272,6 +301,39 @@ mod tests {
         let back = AppConfig::load(&p).unwrap();
         assert_eq!(back.general.concurrency, 5);
         assert_eq!(back.network.site_proxy.get("youtube.com"), Some(&true));
+    }
+
+    #[test]
+    fn resolve_proxy_global_when_no_site_split() {
+        let n = NetworkConfig {
+            proxy_url: "socks5://127.0.0.1:10808".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            n.resolve_proxy("https://www.bilibili.com/video/BV1xx"),
+            Some("socks5://127.0.0.1:10808".to_string())
+        );
+        assert_eq!(
+            NetworkConfig::default().resolve_proxy("https://www.bilibili.com/video/BV1xx"),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_proxy_site_split() {
+        let mut n = NetworkConfig {
+            proxy_url: "socks5://127.0.0.1:10808".into(),
+            ..Default::default()
+        };
+        n.site_proxy.insert("bilibili.com".into(), false); // 勾选=走代理，此处为直连
+        assert_eq!(n.resolve_proxy("https://www.bilibili.com/video/BV1xx"), None);
+        n.site_proxy.insert("youtube.com".into(), true);
+        assert_eq!(
+            n.resolve_proxy("https://www.youtube.com/watch?v=abc"),
+            Some("socks5://127.0.0.1:10808".to_string())
+        );
+        assert_eq!(n.resolve_proxy("https://vimeo.com/1"), None); // 未配置站点直连
+        assert_eq!(n.resolve_proxy("https://api.bilibili.com/x"), None); // 子域命中 false
     }
 
     #[test]

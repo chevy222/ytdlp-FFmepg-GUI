@@ -346,7 +346,7 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
         let resolver = state.resolver();
         let out_dir = default_output_dir(&state, &item);
         let template = cfg.filename_template.clone();
-        let proxy = state.config.lock().unwrap().network.proxy_url.clone();
+        let proxy = state.config.lock().unwrap().network.resolve_proxy(&url);
         let netscape = prepare_cookies(&state, &item);
         let sections = item.sections.clone();
         (
@@ -360,7 +360,7 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
         out_dir: out_dir.clone(),
         filename_template: template,
         embed_cover: cfg.embed_cover,
-        proxy: Some(proxy),
+        proxy,
         cookies_file: netscape,
         sections,
     };

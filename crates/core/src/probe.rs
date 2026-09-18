@@ -82,12 +82,7 @@ pub fn list_playlist_entries(
     if let Some(cf) = cookies_file {
         cmd.arg("--cookies").arg(cf);
     }
-    let proxy = if network.proxy_url.is_empty() {
-        None
-    } else {
-        Some(network.proxy_url.as_str())
-    };
-    if let Some(p) = proxy {
+    if let Some(p) = network.resolve_proxy(url) {
         cmd.arg("--proxy").arg(p);
     }
     cmd.arg(url);
@@ -169,12 +164,7 @@ pub fn probe_url(
     if let Some(cf) = cookies_file {
         cmd.arg("--cookies").arg(cf);
     }
-    let proxy = if network.proxy_url.is_empty() {
-        None
-    } else {
-        Some(network.proxy_url.as_str())
-    };
-    if let Some(p) = proxy {
+    if let Some(p) = network.resolve_proxy(url) {
         cmd.arg("--proxy").arg(p);
     }
     cmd.arg(url);
