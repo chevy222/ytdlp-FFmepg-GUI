@@ -56,8 +56,9 @@
   td input[type=checkbox]{accent-color:var(--teal);cursor:pointer;vertical-align:middle}
   .nrow{display:flex;gap:10px;align-items:center}
   .cv{flex:none;position:relative}
-  .thumb{width:72px;height:40px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#fff;background:var(--teal);position:relative;overflow:hidden;flex:none}
-  .thumb img{width:100%;height:100%;object-fit:cover;transition:transform .35s ease}
+  .thumb{width:72px;height:40px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#fff;background:#eef2f6;position:relative;overflow:hidden;flex:none}
+  .thumb.empty{background:var(--teal)}
+  .thumb img{width:100%;height:100%;object-fit:contain;transition:transform .35s ease;background:#eef2f6}
   .thumb.rot90 img{transform:rotate(90deg)}
   .thumb.rot180 img{transform:rotate(180deg)}
   .thumb.rot270 img{transform:rotate(270deg)}
@@ -441,7 +442,7 @@ function rowHtml(it){
   const ra=it.rot_angle; const ang=(typeof ra==='number'?ra:((ra&&ra.degrees)||0));
   const probing = it.status==='probing';
   const cv = probing ? '' :
-      '<div class="cv"><div class="thumb'+(ang?' rot'+(ang%360):'')+'" data-id="'+id+'">'+(it.thumb?('<img src="'+thumbSrc(it.thumb)+'" alt="">'):'<span class="ph">影</span>')+'</div>'+
+      '<div class="cv"><div class="thumb'+(it.thumb?'':' empty')+(ang?' rot'+(ang%360):'')+'" data-id="'+id+'">'+(it.thumb?('<img src="'+thumbSrc(it.thumb)+'" alt="">'):'<span class="ph">影</span>')+'</div>'+
       '<span class="rotbadge'+(ang?' show':'')+'">'+ang+'°</span></div>';
   const rots = probing ? '' :
       '<button class="rotbtn" data-act="rotcw" data-id="'+id+'" title="顺时针">'+rotSvg(true)+'</button>'+
