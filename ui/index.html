@@ -273,6 +273,7 @@
 <div class="modal small" id="logModal">
   <div class="box">
     <div class="hd"><span id="logTitle">日志</span><span class="sp"></span>
+      <button class="btn sm" onclick="copyLogView()">复制</button>
       <button class="btn sm" onclick="clearLogView()">清空</button>
       <button class="btn sm" onclick="closeLog()">关闭</button>
     </div>
@@ -740,6 +741,11 @@ function openLog(id){
   document.getElementById('logModal').classList.add('show');
 }
 function clearLogView(){document.getElementById('logList').innerHTML='<li>（已清空）</li>';}
+function copyLogView(){
+  const lis=document.querySelectorAll('#logList li');
+  const text=Array.from(lis).map(li=>li.textContent).join('\n');
+  navigator.clipboard.writeText(text).then(()=>toast('日志已复制到剪贴板')).catch(()=>toast('复制失败'));
+}
 function closeLog(){document.getElementById('logModal').classList.remove('show');}
 
 // ===== 设置 =====
