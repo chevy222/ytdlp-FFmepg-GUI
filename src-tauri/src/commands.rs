@@ -454,13 +454,20 @@ fn run_probe(app: AppHandle, id: String) {
                 let thumb_url = p.thumbnail_url.clone();
                 let local_path = item.path.clone();
                 let resolver2 = resolver.clone();
+                let proxy2 = network.proxy_url.clone();
                 tauri::async_runtime::spawn(async move {
                     let dest = ytdlp_core::thumbs::thumb_path(&cache_dir, &id2);
                     let r = if let Some(u) = thumb_url {
                         if u.is_empty() {
                             Ok(())
                         } else {
-                            ytdlp_core::thumbs::save_remote_thumb(&u, &dest)
+                            // 直连失败自动带设置里的代理重试一次（YouTube 等站点
+                            // 缩略图服务器直连拉不动，主下载却走代理）
+                            ytdlp_core::thumbs::save_remote_thumb(
+                                &u,
+                                &dest,
+                                proxy2.as_deref(),
+                            )
                         }
                     } else if let Some(p) = local_path {
                         ytdlp_core::thumbs::extract_thumb(&resolver2, std::path::Path::new(&p), &dest)
@@ -740,23 +747,34 @@ fn finish_download(
             }
         }
     });
-    // 下载完成后：用最终产物抽帧更新封面（Done 且有产物路径）
+    // 下载完成后：条目还没有封面时（解析期远程缩略图失败的兜底），
+    // 用最终产物抽帧补一张；已有封面（远程图）则保留，不做无谓抽帧
     if final_status == Status::Done {
         if let Some(out_path) = final_path {
-            let app2 = app.clone();
-            let id2 = id.to_string();
-            let cache_dir = state.paths.cache_dir();
-            let resolver2 = state.resolver();
-            tauri::async_runtime::spawn(async move {
-                let dest = ytdlp_core::thumbs::thumb_path(&cache_dir, &id2);
-                if ytdlp_core::thumbs::extract_thumb(&resolver2, std::path::Path::new(&out_path), &dest)
+            let need_thumb = {
+                let hist = state.history.lock().unwrap();
+                hist.get(id).and_then(|it| it.thumb.clone()).is_none()
+            };
+            if need_thumb {
+                let app2 = app.clone();
+                let id2 = id.to_string();
+                let cache_dir = state.paths.cache_dir();
+                let resolver2 = state.resolver();
+                tauri::async_runtime::spawn(async move {
+                    let dest = ytdlp_core::thumbs::thumb_path(&cache_dir, &id2);
+                    if ytdlp_core::thumbs::extract_thumb(
+                        &resolver2,
+                        std::path::Path::new(&out_path),
+                        &dest,
+                    )
                     .is_ok()
-                {
-                    update_item(&app2, &id2, |it| {
-                        it.thumb = Some(dest.to_string_lossy().into_owned());
-                    });
-                }
-            });
+                    {
+                        update_item(&app2, &id2, |it| {
+                            it.thumb = Some(dest.to_string_lossy().into_owned());
+                        });
+                    }
+                });
+            }
         }
     }
     // 任务结束：只清理本任务私有临时目录与本次导出的 Cookie 临时文件

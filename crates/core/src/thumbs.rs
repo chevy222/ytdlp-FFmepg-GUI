@@ -5,12 +5,29 @@ use crate::exec::{ChildGuard, Tool, ToolResolver};
 use std::path::{Path, PathBuf};
 
 /// 从远程缩略图 URL 下载到 dest（如 yt-dlp 的 thumbnail）。
-pub fn save_remote_thumb(url: &str, dest: &Path) -> Result<(), String> {
+///
+/// 先直连尝试；失败且调用方给了代理时带 `--proxy` 重试一次——
+/// 需要代理的站点（YouTube 等）缩略图服务器直连拉不动，而 yt-dlp 主下载
+/// 走的是设置里的代理，缩略图不能因此缺席。
+pub fn save_remote_thumb(url: &str, dest: &Path, proxy: Option<&str>) -> Result<(), String> {
     ensure_parent(dest).map_err(|e| e.to_string())?;
+    match fetch_to(url, dest, None) {
+        Ok(()) => Ok(()),
+        Err(e) => match proxy {
+            Some(p) if !p.is_empty() => fetch_to(url, dest, Some(p)),
+            _ => Err(e),
+        },
+    }
+}
+
+fn fetch_to(url: &str, dest: &Path, proxy: Option<&str>) -> Result<(), String> {
     let tmp = dest.with_extension("tmp.jpg");
     let tmp_str = tmp.to_string_lossy().into_owned();
     let mut cmd = std::process::Command::new("curl");
     cmd.args(["-L", "--fail", "-sS", "-o", &tmp_str, url]);
+    if let Some(p) = proxy {
+        cmd.args(["--proxy", p]);
+    }
     // GUI 程序启动控制台子进程会弹出一个黑窗（一闪而过）；这里与其它调用点
     // 保持一致，显式隐藏控制台。
     crate::exec::hide_console(&mut cmd);
