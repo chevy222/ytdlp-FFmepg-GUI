@@ -138,9 +138,9 @@ pub fn build_args(url: &str, p: &DownloadParams, cfg: &DownloadConfig) -> Vec<St
         args.push("--download-sections".into());
         args.push(format!("*{}-{}", start, end));
     }
-    // 进度输出（逐行，供解析）
+    // 进度输出（逐行，供解析）——注意不能加 --no-progress，否则
+    // yt-dlp 不输出 [download] 进度行，percent 永远解析不到
     args.push("--newline".into());
-    args.push("--no-progress".into());
     // 文件名安全
     args.push("--windows-filenames".into());
     args.push("--trim-filenames".into());

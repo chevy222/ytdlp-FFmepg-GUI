@@ -335,7 +335,7 @@
 <div class="toast" id="toast"></div>
 <script>
 // ===== 状态 =====
-const S = { items: [], filter: 'all', selected: new Set(), config: null, cdTimer: {} };
+const S = { items: [], filter: 'all', selected: new Set(), config: null, cdTimer: {}, cdSecs: {} };
 const INVOKE = (cmd, args) => window.__TAURI__.core.invoke(cmd, args || {});
 const LISTEN = window.__TAURI__.event.listen;
 
@@ -397,7 +397,7 @@ function subline(it){
 function ops(it){
   const id=esc(it.id), s=it.status;
   let h='<div class="ops">';
-  const cd = (S.cdTimer[it.id] && s==='Ready' && it.kind==='UrlTask') ? '<span class="countdown">'+S.cdTimer[it.id]+'s 后自动下载</span>' : '';
+  const cd = (S.cdSecs[it.id] && s==='Ready' && it.kind==='UrlTask') ? '<span class="countdown">'+S.cdSecs[it.id]+'s 后自动下载</span>' : '';
   if (it.kind==='UrlTask' && s==='Ready') h += cd + '<button class="btn sm primary" data-act="dl" data-id="'+id+'">下载</button>';
   if (it.kind==='UrlTask' && s==='Ready') h += '<button class="btn sm" data-act="sec" data-id="'+id+'">剪辑</button>';
   if ((s==='Ready'||s==='Done') && it.path) h += '<button class="btn sm" data-act="tc" data-id="'+id+'">转码</button>';
@@ -629,14 +629,21 @@ document.getElementById('btnMergeOk').addEventListener('click',()=>{
 // ===== 5 秒倒计时自动下载 =====
 function startCountdown(id){
   stopCountdown(id);
-  let n=5; S.cdTimer[id]=n; render();
+  let n=5; S.cdSecs[id]=n;
   const t=setInterval(()=>{
-    if(!S.items.find(i=>i.id===id)){clearInterval(t);delete S.cdTimer[id];return;}
-    n--; S.cdTimer[id]=n; render();
-    if(n<=0){clearInterval(t);delete S.cdTimer[id];render();startDownload(id);}
+    if(!S.items.find(i=>i.id===id)){clearInterval(t);delete S.cdTimer[id];delete S.cdSecs[id];return;}
+    n--;
+    if(n<=0){clearInterval(t);delete S.cdTimer[id];delete S.cdSecs[id];render();startDownload(id);return;}
+    S.cdSecs[id]=n; render();
   },1000);
+  S.cdTimer[id]=t;
+  render();
 }
-function stopCountdown(id){ if(S.cdTimer[id])clearInterval(S.cdTimer[id]); delete S.cdTimer[id]; render(); }
+function stopCountdown(id){
+  if(S.cdTimer[id])clearInterval(S.cdTimer[id]);
+  delete S.cdTimer[id]; delete S.cdSecs[id];
+  render();
+}
 
 // ===== 格式选择 =====
 let fmtId=null;
