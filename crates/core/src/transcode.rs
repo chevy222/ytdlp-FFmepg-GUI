@@ -295,14 +295,12 @@ pub fn build_args(resolver: &ToolResolver, params: &TranscodeParams, meta: &Medi
     args.push(encoder);
     args.extend(enc_args);
     args.push("-c:a".into());
+    args.push(if gain.is_some() { "aac" } else { "copy" }.into());
     if let Some(g) = gain {
         if g > 0.1 {
             args.push("-af".into());
             args.push(format!("volume={:.2}dB", g));
         }
-        args.push("aac".into());
-    } else {
-        args.push("copy".into());
     }
     if params.keep_cover {
         args.push("-c:t".into());
