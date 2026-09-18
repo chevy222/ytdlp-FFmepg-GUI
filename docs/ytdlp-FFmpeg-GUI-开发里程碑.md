@@ -1,102 +1,107 @@
-# ytdlp-FFmpeg-GUI（影栈）开发里程碑
+# ytdlp-FFmpeg-GUI（影栈）工程与构建说明
+
+> 本文档描述当前仓库的**工程配置、构建流程、CI 门禁与代码约定**，与代码同步；不含提交历史与阶段记录。
+> 功能行为与实现细节见 `docs/ytdlp-FFmpeg-GUI-doubao-需求文档.md`。
 
 | 项 | 内容 |
 | --- | --- |
-| 项目代号 | ytdlp-FFmpeg-GUI |
-| 产品中文名 | 影栈 |
-| 代码仓库 | https://github.com/chevy222/ytdlp-FFmpeg-GUI.git |
-| 分支 | main |
-| 文档日期 | 2026-09-18 |
-| 关联文档 | 需求文档 v1.0 / 效果图 / 架构总览图（同目录 docs/） |
+| workspace | 根 `Cargo.toml`（`resolver = "2"`，members = `crates/core`、`src-tauri`） |
+| crate | `ytdlp-core`（库，平台无关核心层）· `ytdlp-gui`（bin `ytdlp-FFmpeg-GUI` + rlib `ytdlp_gui_lib`） |
+| edition / MSRV | edition 2021 · `rust-version = 1.85`（workspace 统一） |
+| 许可证 | MIT |
+| 目标平台 | Windows x64（MSVC）；核心层保持平台无关以便在 Linux 上单测 |
 
----
+## 1. 工具链与依赖
 
-## 里程碑总览
+`rust-toolchain.toml`：`channel = "stable"`，`components = ["rustfmt", "clippy"]`，`targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]`。
 
-| 阶段 | Commit | 日期 | 内容 | 验证状态 |
-| --- | --- | --- | --- | --- |
-| M0 工程初始化 | `8e0d1e2` | 09-17 | workspace 骨架 + 核心层（模型/状态机/配置/历史，48 单测）+ Tauri v2 空窗口 + Windows CI 占位 | 通过 |
-| M1 解析 + 列表 + 下载 | `863c7cd` | 09-17 | 核心五模块（exec/cookies/probe/download/worker）+ src-tauri 18 命令 + 前端效果图接入（真实 invoke） | 通过 |
-| 交叉编译修复 | `3947696` | 09-17 | 修通 Linux 环境交叉编译 Windows 单 EXE（cargo-xwin + zig），webview2-com/windows 版本对齐，流程固化到 scripts/cross-build/ | 通过 |
-| M2 转码 | `1fda862` | 09-17 | 转码引擎（H.265：QSV→libx265 兜底/NVENC/AMF，旋转/分辨率/码率/增益/封面）+ 批量转码命令 + 列表封面旋转交互 | 通过 |
-| M3 合并 | `a4a9077` | 09-17 | 合并引擎（同参直拼/异参统一）+ 合并面板 + 产物回列表 | 通过 |
-| M4 CLI 入口 | `86a5163` | 09-17 | CLI 解析（--url/--cookies/--dir/--yt-dlp-path/--deno-path）+ 单实例转发（UL-09） | 通过 |
-| P1 增强 | `0f9fe6a` | 09-17 | 播放列表展开平铺（DL-09）+ 时间范围下载（DL-12）+ 合并音量归一化（MG-05） | 通过 |
-| P2/TC-16 | `33dc546` | 09-18 | 硬件编码器探测（QSV/NVENC/AMF）+ 硬编失败自动回退 libx265 | 通过 |
-| 发布收尾 | `ef9cc88` | 09-18 | release.yml 权限修正（contents: write）+ Release 只发 zip；README 里程碑对齐 | 通过 |
-| CI 修复 | `223e5b0` | 09-18 | exec 单测平台无关化（tool_names cfg windows 分支） | 通过 |
-| 迭代修复 | `1940420`→`d00d30e` | 09-18 | 转码输出参数/滤镜 min() 转义、画质列采样率+码率估算、转码失败自动重解析、封面旋转自适应行高、登录窗走系统代理（移除环境参数防卡死） | 通过 |
+workspace 依赖（`Cargo.toml`）：
 
-> 后续规划（P2/P3 尾项，未被要求实现）：MG-07 音视频合成、Q11 浏览器扩展桥接。
+| 依赖 | 版本 | 用途 |
+| --- | --- | --- |
+| serde / serde_json | 1 | 全部模型的序列化与 JSON 存储 |
+| thiserror | 2 | `CoreError` 错误类型 |
+| uuid (v4) | 1 | 条目 id、任务临时目录名 |
+| url | 2 | Cookie/站点 host 解析 |
+| regex | 1 | yt-dlp 进度行解析 |
 
----
+`crates/core` 额外依赖：`zip` 0.6（`default-features = false, features = ["deflate"]`，解压工具链 zip）、`sha2` 0.10（工具链校验）、`encoding_rs` 0.8（子进程输出 GBK 回退解码）；dev 依赖 `tempfile` 3。
 
-## 各阶段详情
+`src-tauri` 依赖：`tauri` 2（`protocol-asset`）、`tauri-plugin-single-instance` 2、`tauri-plugin-dialog` 2、`ytdlp-core`（path）；Windows 目标额外 `webview2-com` 0.38、`windows` 0.61（`Win32_Foundation`，用于 COM CookieManager）；build 依赖 `tauri-build` 2。
 
-### M0 工程初始化（8e0d1e2）
+应用配置（`src-tauri/tauri.conf.json`）：单窗口「影栈（ytdlp-FFmpeg-GUI）」，1280×800（最小 1024×640，居中）；`frontendDist = ../ui`（编译期由 `generate_context!` 嵌入单 EXE）；`withGlobalTauri = true`；`assetProtocol` 开启（用于展示 `config/cache/thumbs` 缩略图）；能力文件 `capabilities/default.json` 仅授予 `core:default` 与 `dialog:default`。
 
-- workspace 三 crate：`crates/core`（平台无关可单测）、`src-tauri`（Tauri v2 应用壳）、`ui/`（单页原生 JS 前端）。
-- 核心层落地：`MediaItem`/`MediaMeta` 模型、状态机（含迁移白名单）、`AppConfig`（JSON 原子写、损坏备份回退）、历史持久化。
-- `scripts/build.ps1`（pwsh 7，与 CI 同构）、`.github/workflows/build.yml`（Windows runner）。
-- 空窗口可运行（Tauri v2）。
+## 2. 本地构建
 
-### M1 解析 + 列表 + 下载（863c7cd）
+```powershell
+pwsh ./scripts/build.ps1
+```
 
-- `exec.rs`：ToolResolver（PATH / 配置 / 托管 tools 目录三级解析）、进程管理、kill_tree 取消。
-- `cookies.rs`：Cookie 按 HOST 匹配 + 站点级回退 + X↔twitter 姊妹域名互退。
-- `probe.rs`：URL 元数据（yt-dlp -j）+ 本地文件（ffprobe + volumedetect：分辨率/编码/帧率/音轨/封面/最大音量）。
-- `download.rs`：yt-dlp 下载（格式选择、PO-Token、cookie、进度解析、取消清残留）。
-- `worker.rs` + src-tauri 18 命令：添加/解析/下载/登录（WebView2 内嵌登录，YouTube SPA 800ms 重注入按钮兜底）/取消/重试等。
-- 前端效果图接入真实 invoke：统一列表、5s 倒计时自动下载、画质下拉、批量栏、日志按条目。
+`scripts/build.ps1`（PowerShell 7，`$ErrorActionPreference = 'Stop'`）步骤：
 
-### 交叉编译修复（3947696）
+1. `cargo test -p ytdlp-core` —— 失败即中断；
+2. `cargo clippy -p ytdlp-core --all-targets -- -D warnings` —— 失败即中断；
+3. `cargo audit` —— 未安装或发现公告只告警，不中断；
+4. `cargo build --release`；
+5. 校验 `target\release\ytdlp-FFmpeg-GUI.exe` 存在并输出体积。
 
-- Linux 直接 `cargo check src-tauri` 因 gdk-sys 缺 GTK 必失败 → 统一 xwin 交叉检查/构建 Windows 目标（`x86_64-pc-windows-msvc`）。
-- webview2-com 0.38 / windows 0.61 版本分裂修复；login.rs/login_win.rs 重写。
-- 构建三件套固化在 `scripts/cross-build/README.md` + 4 个 wrapper（cargo-xwin/zig 等）。
-- 产物：`target/x86_64-pc-windows-msvc/release/ytdlp-FFmpeg-GUI.exe`（~11MB）。
+产物：`target/release/ytdlp-FFmpeg-GUI.exe`（workspace 根即仓库根，target 在仓库根下）。单 EXE 绿色便携：前端资源在编译期嵌入，运行时目录（`config/`、`temp/`、`tools/`）在 exe 同级自动创建，不写注册表、不依赖安装包。
 
-### M2 转码（1fda862）
+前置条件：Windows 10/11 x64 + WebView2 运行时（Win11 自带）+ rustup stable（含 rustfmt/clippy）。
 
-- `transcode.rs`：编码器协商（auto=QSV→libx265 兜底、nvenc cq23 p5、amf qp23）、旋转 transpose、分辨率上限、码率封顶、音量增益上限、保留封面、mp4 hvc1 tag、+faststart、文件名模板（纯标题/标题+ID/日期-标题）、碰撞 auto_inc/skip、`-progress pipe:1` 进度、取消 kill_tree + 删残留。
-- src-tauri：start_transcode/run_transcode_task/finish_transcode（产物 TranscodeOut 回列表、release slot）+ launch_next 统一调度（下载/转码按状态分流）。
-- 状态机加 `Done→Transcoding`；UI 封面旋转交互（缩略图上旋转按钮，封面按目标方向旋转）。
+### Linux 环境交叉编译（本地备用通道）
 
-### M3 合并（a4a9077）
+见 `scripts/cross-build/README.md`：用 cargo-xwin / zigbuild 交叉编译 `x86_64-pc-windows-msvc`，产物在 `target/x86_64-pc-windows-msvc/release/ytdlp-FFmpeg-GUI.exe`。该通道**不用于 CI**。
 
-- `merge.rs`：同参直拼（MG-02：vcodec/height/fps/acodec/sample_rate/extradata SPS-PPS 一致 → concat demuxer 零重编码）/ 异参统一（MG-03：逐段 H.265 转码后直拼）；输出 MP4/MKV + faststart；temp/merge_<uuid>/ 私有目录结束清理；取消清理。
-- MediaMeta 增 extradata/sample_rate 字段（probe 采集，直拼硬性判据）。
-- 状态机加 `Done→Merging`；UI 合并面板（顺序上移下移/移除、容器/编码器/文件名、参数差异预警）。
+## 3. CI（GitHub Actions，windows-latest）
 
-### M4 CLI 入口（86a5163，UL-09）
+`.github/workflows/build.yml`（push main / PR）：
 
-- `cli.rs` 纯解析：`--url`（可重复）/`--cookies`/`--dir`/`--yt-dlp-path`/`--deno-path`/裸位置参数当 URL。
-- `tauri-plugin-single-instance`：第二实例 argv 转发给主实例（存 CliOverrides + add_url）；本次调用级覆盖不写 config.json。
-- `--dir` 输出目录优先、`--cookies` resolve_cookies 优先并统一 probe/下载路径、工具路径进 ToolResolver。
+```
+checkout → 安装 rust stable(+rustfmt,clippy) → 缓存
+→ cargo test -p ytdlp-core
+→ cargo clippy -p ytdlp-core --all-targets -- -D warnings
+→ cargo clippy -p ytdlp-gui  --all-targets -- -D warnings
+→ cargo install cargo-audit --locked && cargo audit      # continue-on-error：信息性，不阻塞
+→ cargo build --release
+→ 校验 target\release\ytdlp-FFmpeg-GUI.exe 存在
+→ 上传 artifact ytdlp-FFmpeg-GUI-win64
+```
 
-### P1 增强（0f9fe6a）
+`.github/workflows/release.yml`（push tag `v*`）：同样的门禁步骤，随后把单 EXE 压成 `ytdlp-FFmpeg-GUI-<tag>-win64.zip`，用 `softprops/action-gh-release` 创建**草稿** Release（`permissions: contents: write`）。
 
-- **DL-09 播放列表展开**：probe_url 支持 `--yes-playlist`（设置-下载 播放列表开关）；解析出合集时 `--flat-playlist` 展开每集 URL 平铺进统一列表逐条解析/下载。
-- **DL-12 时间范围下载**：MediaItem 增 sections 字段，下载传 yt-dlp `--download-sections`；行操作"剪辑"按钮（modal 输起止 HH:MM:SS，清空移除）。
-- **MG-05 合并音量归一化**：合并完成后 probe 产物音量 → 视频 copy、音频 aac 增益至峰值 0dBFS（上限来自通用设置）；合并面板开关默认跟随通用。
+## 4. 质量基线
 
-### P2/TC-16（33dc546）
+- `cargo test -p ytdlp-core`：**129 个用例**（`#[cfg(test)]` 静态计数，分布：model 30、download 14、probe 13、transcode 11、history 9、config 8、cookies 8、exec 8、merge 8、worker 6、cli 5、paths 4、tool_download 3、thumbs 2）。
+- `cargo clippy -p ytdlp-core --all-targets -- -D warnings` 与 `cargo clippy -p ytdlp-gui --all-targets -- -D warnings` 均为 CI 门禁。
+- 核心层测试全部平台无关（不依赖 Windows 特有 API、不硬编码 `.exe` 后缀——按 `cfg(windows)` 断言）；涉及子进程的测试只做存在性/解析断言，不依赖外部工具是否安装。
 
-- `HwEncoders{qsv,nvenc,amf}` + `detect_hw_encoders`（ffmpeg -encoders，解析纯函数可单测）。
-- `run_transcode` 包一层：显式 NVENC/AMF 或自动探测 QSV 运行时失败（非取消）自动用 libx265 重试一次，进度/日志延续。
-- UI 设置-转码默认编码器下拉加载时探测硬件，未检测到的选项标注"（未检测到）"（仍可选）。
+## 5. 代码约定
 
-### 发布收尾（ef9cc88）+ CI 修复（223e5b0）
+- **分层**：`crates/core` 只做纯逻辑与子进程编排，不依赖 GUI；`src-tauri` 负责命令桥接、全局状态与后台线程；`ui/index.html` 为单文件前端（原生 JS，通过 `window.__TAURI__.core.invoke` 与事件通信）。
+- **错误类型**：核心层统一 `CoreError`（`Io` / `Json` / `InvalidTransition` / `NotFound` / `ConfigCorrupt` / `Cancelled` / `ProcessFailed`）；应用层命令统一 `Result<T, String>` 回传前端。
+- **状态变更**：业务状态迁移必须走 `model::transition` 白名单校验；进度类高频更新只 `emit` 前端不落盘，状态迁移才持久化 history.json。
+- **文件安全**：JSON 原子写（临时文件 + 单次 rename）；媒体产物先写临时文件、校验后 rename 覆盖；取消/失败清理本任务临时目录与半成品，绝不删除 exe 同级目录之外的内容。
+- **子进程**：全部经 `Command` 参数化调用（不拼 shell）；Windows 下加 `CREATE_NO_WINDOW`；取消用 `taskkill /PID <pid> /T /F` 终止进程树。
+- **注释语言**：中文；注释说明"为什么"（约束、坑、外部工具行为），不复述代码。
+- 外部工具参数约束（封面映射、`-tag:v:0`、偶数对齐、`--ignore-errors` 等）见实现说明 §11 —— **改动 ffmpeg/yt-dlp 参数前必读**。
 
-- `release.yml`：push `v*` tag → Windows runner → 单测 → clippy(-D warnings) → release 构建 → GitHub Release 草稿上传 **zip（单 EXE 压缩）**；workflow 声明 `permissions: contents: write` 以便创建 Release。
-- CI 平台化修复：`exec.rs` tool_names 测试按 `cfg(windows)` 断言 `.exe` 后缀，全仓排查无其它硬编码文件名。
+## 6. 发布
 
----
+- 交付物：**单个 exe**（`target/release/ytdlp-FFmpeg-GUI.exe`），不做安装包（无 NSIS/MSI、不写注册表）。
+- CI release 只做"单 EXE 套一层 zip"，不做打包器。
 
-## 质量基线（当前）
+## 7. 手动验收清单
 
-- `cargo test -p ytdlp-core`：**117 passed**。
-- `cargo clippy -p ytdlp-core --all-targets -- -D warnings` 与 `cargo xwin clippy -p ytdlp-gui`：**0 警告**。
-- Release 单 EXE 构建通过：`target/x86_64-pc-windows-msvc/release/ytdlp-FFmpeg-GUI.exe`（~11MB）。
-- UI 自检（html skill shot.py）：无控制台错误、无 lint 触发。
-- 待办：打 `v1.0.0` tag 触发 CI 出 Release 草稿（仅 zip）；Windows 真机端到端验证（下载→转码→合并实链路）。
+发版前在 Windows 真机按顺序走一遍（本仓库的自动化测试只覆盖核心层纯逻辑，外部工具链路需要真机验收）：
+
+1. 首次启动：exe 同级生成 `config/`、`temp/`、`tools/`；设置-依赖自检显示 yt-dlp / ffmpeg / ffprobe / deno 状态与版本。
+2. 依赖下载：设置-依赖 对四个工具执行"下载"，确认落在 `tools\` 且自检通过。
+3. 下载：粘贴一个 URL → 5 秒倒计时自动下载 → 状态依次 解析中 → 已就绪 → 下载中 → 后处理中 → 已完成；产物出现在默认输出目录，条目 `path` 已回填（行内出现"转码"按钮）。
+4. 封面/画质列：条目缩略图出现，画质列显示 12 项源元数据（含采样率与音轨数）。
+5. 下载→转码：对刚下载的条目点"转码" → 产物回列表并标"已完成"；设置-转码勾选"保留封面"时产物仍带封面。
+6. 本地批量：拖入手机竖屏视频目录 → 解析 → 用缩略图旋转箭头纠正方向 → 批量转码（含 9:16 等非标比例素材，确认不因奇数宽高失败）。
+7. 合并：勾选 ≥2 段（含参数一致与不一致各一组）→ 合并面板排序 → 输出可播放、参数一致组日志显示"直拼（零重编码）"。
+8. 取消：下载/转码中断时点"取消"，确认进程树被终止、本任务临时目录被清理、状态为"已取消"，且**其它并发任务的临时目录不受影响**。
+9. 需要登录：选一个需登录站点触发"需要登录" → "去登录"完成登录 → 自动重新解析并可继续。
+10. CLI/单实例：`ytdlp-FFmpeg-GUI --url <URL>` 启动新实例；应用已运行时再次执行该命令，URL 应进入现有实例列表。

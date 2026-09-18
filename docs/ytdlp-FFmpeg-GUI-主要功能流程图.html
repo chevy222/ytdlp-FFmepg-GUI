@@ -1,8 +1,8 @@
 <html style="margin:0;padding:0;">
-<title>ytdlp-FFmpeg-GUI 主要功能流程图 v1.0（统一列表 · 元数据先行 · 三能力动作）</title>
+<title>ytdlp-FFmpeg-GUI 主要功能流程图（统一列表 · 元数据先行 · 三能力动作）</title>
 <div style="width:100%;box-sizing:border-box;font-family:'Segoe UI','Noto Sans SC','Microsoft YaHei',sans-serif;background:#f5f7fa;padding:22px 18px;color:#1f2937;">
   <div style="font-size:20px;font-weight:700;color:#0f766e;margin-bottom:4px;">ytdlp-FFmpeg-GUI · 主要功能流程图</div>
-  <div style="font-size:12.5px;color:#64748b;margin-bottom:16px;">终版 v1.0 ｜统一列表即工作台 + 元数据先行 + 下载/转码/合并三能力动作 ｜无流水线编排 ｜绿色便携单 EXE（全部文件在 exe 同级）</div>
+  <div style="font-size:12.5px;color:#64748b;margin-bottom:16px;">与代码同步 ｜统一列表即工作台 + 元数据先行 + 下载/转码/合并三能力动作 ｜无流水线编排 ｜绿色便携单 EXE（全部文件在 exe 同级）</div>
 
   <!-- ===== 一、主流程 ===== -->
   <div style="background:#fff;border:1.5px solid #0f766e;border-radius:10px;margin-bottom:12px;overflow:hidden;">
@@ -45,7 +45,7 @@
         <div style="font-size:12px;color:#64748b;line-height:1.8;">
           格式选择：画质/格式 modal（容器/分辨率/编码/码率/音轨…）<br>
           时间范围：行操作"剪辑"设起止 → --download-sections<br>
-          参数：--cookies（config/cookies/）、PO-Token、代理、并发分片、重试、仅音频、嵌入封面/元数据<br>
+          参数：--cookies（config/cookies/，导出到任务私有目录）、代理、并发分片、重试、仅音频、嵌入封面/元数据<br>
           输出：默认桌面（可配）→ 文件名模板（纯标题/标题+ID/日期-标题）<br>
           后处理：音量归一化（通用）→ 产物本地解析回列表<br>
           播放列表：默认开关 → 展开每集平铺
@@ -122,7 +122,7 @@
     <div style="background:#fef2f2;padding:6px 12px;font-size:13px;font-weight:700;color:#b91c1c;">四、异常与兜底分支</div>
     <div style="padding:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px;">
       <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px;font-size:12px;color:#64748b;line-height:1.8;">
-        <b style="color:#334155;">解析失败</b>：分类提示（B 站 412 → 放 cookie；YouTube 403 → 检查 deno/代理/cookie/PO-Token；X 强制登录）→ 失败状态可重试 / 去登录
+        <b style="color:#334155;">解析失败</b>：分类提示（B 站 412 → 放 cookie；YouTube 403 → 检查 deno/代理/cookie；X 强制登录）→ 失败状态可重试 / 去登录
       </div>
       <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px;font-size:12px;color:#64748b;line-height:1.8;">
         <b style="color:#334155;">下载失败/取消</b>：取消 kill_tree + 删除 temp 残留；失败保留输出判断，产物回列表按 MD-06 重解析
@@ -142,12 +142,11 @@
     <div style="padding:12px;font-size:12.5px;color:#334155;line-height:1.9;">
       <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px;font-family:Consolas,monospace;overflow:auto;">
         exe 同级/<br>
-        ├─ <b style="color:#0f766e;">config/</b>　所有固化内容（JSON）：config.json 用户设置、history.json 列表/历史（≤200 条，默认保留 100）、cookies/&lt;host&gt;.json、cache.json 解析缓存索引 + cache/ 缩略图、ui.json 窗口状态<br>
-        ├─ <b style="color:#b45309;">temp/</b>　下载分片/中间产物/合并临时（按任务子目录隔离，结束清理）<br>
-        ├─ <b style="color:#6d28d9;">tools/</b>　托管模式工具链（yt-dlp / ffmpeg / ffprobe / deno）<br>
-        └─ <b style="color:#b91c1c;">logs/</b>　运行日志（追加 .log）；日志按条目查看（弹窗只显示该条目，无全局日志页）
+        ├─ <b style="color:#0f766e;">config/</b>　config.json 用户设置、history.json 列表/队列/条目日志、cookies/&lt;host&gt;.json、cache/thumbs/&lt;条目id&gt;.jpg 封面缩略图<br>
+        ├─ <b style="color:#b45309;">temp/</b>　任务私有目录 temp/&lt;任务id&gt;/（导出的 Cookie）、temp/merge_&lt;uuid&gt;/（合并中间产物）、temp/tool_dl/（工具链下载暂存）<br>
+        ├─ <b style="color:#6d28d9;">tools/</b>　托管模式工具链（yt-dlp / ffmpeg / ffprobe / deno）
       </div>
-      <div style="margin-top:8px;color:#64748b;">下载/转码/合并输出 → 默认桌面（可配默认输出目录）；JSON 原子写（临时文件 + rename），损坏备份后回退默认。</div>
+      <div style="margin-top:8px;color:#64748b;">下载/转码/合并输出 → 默认桌面（可配默认输出目录）；JSON 原子写（临时文件 + 单次 rename 覆盖），损坏备份后回退默认；日志按条目查看（弹窗只显示该条目，无全局日志页）。</div>
     </div>
   </div>
 
@@ -155,14 +154,15 @@
   <div style="background:#fff;border:1.5px solid #0369a1;border-radius:10px;margin-bottom:8px;overflow:hidden;">
     <div style="background:#f0f9ff;padding:6px 12px;font-size:13px;font-weight:700;color:#0369a1;">六、设置体系（统一弹窗六个分组，路径输入框、站点 Cookie/分流加+-列表）</div>
     <div style="padding:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;font-size:12px;color:#64748b;line-height:1.8;">
-      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;"><b style="color:#334155;">依赖</b><br>ffmpeg/ffprobe/yt-dlp/deno 路径（默认 PATH，可输路径）；下载与更新工具按钮（GitHub 仓库 ytdlp-FFmpeg-GUI）；工具链托管目录默认 &lt;exe 同级&gt;\tools\</div>
-      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;"><b style="color:#334155;">网络</b><br>代理地址（v-grow 输入框 + 常用代理工具 IP/端口下拉，历史上限 100）；站点分流加+-列表；Cookie 目录默认 &lt;exe 同级&gt;\config\cookies\，直接页面管理</div>
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;"><b style="color:#334155;">依赖</b><br>ffmpeg/ffprobe/yt-dlp/deno 路径（默认 PATH，可输路径）；下载与更新按钮：yt-dlp（yt-dlp/yt-dlp 发布）、ffmpeg+ffprobe（BtbN/FFmpeg-Builds）、deno（denoland/deno），经 SHA-256 校验后原子激活到 &lt;exe 同级&gt;\tools\</div>
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;"><b style="color:#334155;">网络</b><br>代理地址输入框 + 常用代理工具下拉；站点分流加+-列表（仅勾选的站点走代理，其余直连）</div>
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;"><b style="color:#334155;">Cookie</b><br>列出 config/cookies/ 下已保存站点（数量 + 最长有效期），可删除</div>
       <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;"><b style="color:#334155;">下载</b><br>并发分片、重试、仅音频、播放列表默认、嵌入封面/元数据、文件名模板（下载/转码/合并共用）</div>
-      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;"><b style="color:#334155;">转码</b><br>长边/短边上限、码率封顶与兜底、默认编码器（auto/libx265/NVENC/AMF，探测标注）、QSV low_power、保留封面；x265 CRF 固定 23</div>
-      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;"><b style="color:#334155;">通用</b><br>默认输出目录（桌面）、碰撞命名策略、音量归一化（下载后处理与转码共用）+ 增益上限、并发任务数（全局共享，默认 3）、启动时检查更新、历史上限、清理解析缓存</div>
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;"><b style="color:#334155;">转码</b><br>长边/短边上限、码率封顶、默认编码器（auto/libx265/NVENC/AMF，探测标注）、QSV low_power、保留封面；x265 CRF 固定 23</div>
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;"><b style="color:#334155;">通用</b><br>默认输出目录（桌面）、碰撞命名策略、音量归一化（下载后处理与转码共用）+ 增益上限、并发任务数（全局共享，默认 3）；启动时检查更新 / 历史上限 / 清理解析缓存三项在配置中保留但尚未接线</div>
     </div>
   </div>
 
-  <div style="font-size:11.5px;color:#94a3b8;margin-top:6px;">配套文档：docs/ytdlp-FFmpeg-GUI-doubao-需求文档.md（v1.0 终版）· 效果图.html · 架构总览图.html · 开发里程碑.md</div>
+  <div style="font-size:11.5px;color:#94a3b8;margin-top:6px;">配套文档：docs/ytdlp-FFmpeg-GUI-doubao-需求文档.md（实现说明）· 效果图.html · 架构总览图.html · 开发里程碑.md（工程与构建说明）</div>
 </div>
 </html>
