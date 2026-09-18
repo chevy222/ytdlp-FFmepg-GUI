@@ -71,13 +71,14 @@ pub struct ToolResolver {
 }
 
 impl ToolResolver {
-    /// 从配置构造；路径留空 = 走 PATH。
+    /// 从配置构造；路径留空 = 走 PATH，托管目录默认未登记（由调用方 with_tools_dir 补）。
     pub fn from_config(cfg: &DependenciesConfig) -> Self {
         Self {
             yt_dlp: cfg.yt_dlp_path.as_ref().map(PathBuf::from),
             ffmpeg: cfg.ffmpeg_path.as_ref().map(PathBuf::from),
             ffprobe: cfg.ffprobe_path.as_ref().map(PathBuf::from),
             deno: cfg.deno_path.as_ref().map(PathBuf::from),
+            tools_dir: None,
         }
     }
 

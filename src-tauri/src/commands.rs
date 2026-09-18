@@ -95,7 +95,7 @@ pub fn tool_urls() -> CmdResult<Vec<ToolUrlInfo>> {
 /// - `update=true`（更新）：只更新**当前生效的那一份**——设置里填的路径或 `tools\`
 ///   托管副本；当前用的是系统 PATH 里的（不归本程序管）则提示用户自己更新。
 ///   更新前先判断有没有新版本：yt-dlp / deno 比 release tag，ffmpeg / ffprobe 比
-///   "上次安装时的远端产物指纹"（`tools/installed.json`）；已是最新就不下载。
+///   gyan.dev 的 release-version 与本地版本；版本取不到再回退指纹比对。已是最新就不下载。
 #[tauri::command]
 pub async fn download_tool(
     app: AppHandle,

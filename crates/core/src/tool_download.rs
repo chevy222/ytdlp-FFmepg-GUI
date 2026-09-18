@@ -300,8 +300,8 @@ impl ToolDownloader {
         self.target_path(kind).is_file()
     }
 
-    /// 远端最新版本号（读 `releases/latest` 的最终跳转地址）。
-    /// 不支持的源（ffmpeg/ffprobe 是滚动构建）或查询失败返回 None。
+    /// 远端最新版本号（按工具的版本 feed 查询）。
+    /// feed 取不到 / 网络失败返回 None（调用方回退指纹或按"需要更新"处理）。
     pub fn latest_version(&self, kind: ToolKind) -> Option<String> {
         match kind.version_feed()? {
             VersionFeed::Text(url) => {
