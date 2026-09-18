@@ -1325,6 +1325,23 @@ pub fn relogin_item(app: AppHandle, id: String) -> CmdResult<()> {
     Ok(())
 }
 
+/// 从设置页直接打开某站点的内置登录窗（不依赖列表条目状态）。
+///
+/// 列表里的"去登录"原先只在 `NeedLogin` 时出现，但不少站点**未登录也能解析**
+/// 出受限清晰度（B 站未登录只给低码率，条目状态是 Ready 而不是 NeedLogin），
+/// 于是用户没有任何入口去登录换取高清晰度。这里提供一个与条目无关的入口。
+///
+/// 传站点级域名（如 `bilibili.com`）即可：`cookie_candidates` 会按
+/// "精确 host → 父域 → www 子域" 回退，条目侧的 `www.bilibili.com` 一样命中。
+#[tauri::command]
+pub fn open_login_site(app: AppHandle, host: String) -> CmdResult<()> {
+    let login_url = login::login_url_for_host(&host).ok_or_else(|| {
+        format!("站点 {host} 不支持内置登录：请在下方的 Cookie 列表中直接导入")
+    })?;
+    login::open_login(&app, &host, &login_url).map_err(err_string)?;
+    Ok(())
+}
+
 // ---------- 配置 ----------
 
 #[tauri::command]

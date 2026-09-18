@@ -405,6 +405,19 @@ function subline(it){
   return '';
 }
 
+// 支持内置登录的站点。keys 用于在条目上判断站点是否可登录；
+// **须与 Rust 侧 login::login_url_for_host 保持一致**。
+const LOGIN_SITES=[
+  {host:'youtube.com', label:'YouTube',      keys:['youtube','youtu.be']},
+  {host:'bilibili.com',label:'哔哩哔哩',      keys:['bilibili']},
+  {host:'x.com',       label:'X / Twitter',  keys:['x.com','twitter']},
+  {host:'douyin.com',  label:'抖音',          keys:['douyin']}
+];
+function canLogin(it){
+  const s=((it.site||'')+' '+(it.url||'')).toLowerCase();
+  return LOGIN_SITES.some(x=>x.keys.some(k=>s.includes(k)));
+}
+
 function ops(it){
   const id=esc(it.id), s=it.status;
   let h='<div class="ops">';
@@ -412,7 +425,11 @@ function ops(it){
   if (it.kind==='UrlTask' && s==='Ready') h += cd + '<button class="btn sm primary" data-act="dl" data-id="'+id+'">下载</button>';
   if (it.kind==='UrlTask' && s==='Ready') h += '<button class="btn sm" data-act="sec" data-id="'+id+'">剪辑</button>';
   if ((s==='Ready'||s==='Done') && it.path) h += '<button class="btn sm" data-act="tc" data-id="'+id+'">转码</button>';
-  if (s==='NeedLogin') h += '<button class="btn sm" data-act="relogin" data-id="'+id+'">去登录</button>';
+  // 需要登录时必须有入口；**解析完成的 URL 任务也提供** —— 不少站点未登录
+  // 同样能解析出受限清晰度（B 站只给低码率、没有 1080P+），此时状态是 Ready
+  // 而不是 NeedLogin，用户就完全找不到登录入口。只对支持内置登录的站点显示，
+  // 免得点了一片"该站点不支持内置登录"。
+  if ((s==='NeedLogin' || (it.kind==='UrlTask' && s==='Ready')) && canLogin(it)) h += '<button class="btn sm" data-act="relogin" data-id="'+id+'">去登录</button>';
   if (s==='Downloading'||s==='PostProcessing'||s==='Transcoding'||s==='Merging') h += '<button class="btn sm danger" data-act="cancel" data-id="'+id+'">取消</button>';
   if (s==='Failed'||s==='Canceled'||s==='NeedLogin') h += '<button class="btn sm" data-act="retry" data-id="'+id+'">重试</button>';
   if (s==='Done') h += '<button class="btn sm" data-act="open" data-id="'+id+'">打开</button>';
@@ -799,9 +816,13 @@ function renderSetPage(){
       '<div class="'+(Object.keys(smap).length?'site-list':'site-empty')+'" id="siteList">'+renderSiteList(smap)+'</div>'+
       '<button class="site-add" id="btnSiteAdd">+ 添加站点</button></div></div>';
   } else if(curPage==='cookie'){
-    h+='<div class="set-hd">站点 Cookie（存储于 &lt;exe 同级&gt;\\config\\cookies\\，按 HOST 分文件，含 HttpOnly）</div>'+
+    h+='<div class="set-hd">内置登录（点站点打开登录窗；登录后点窗内"登录完成"保存 Cookie）</div>'+
+      '<div class="set-row"><div class="v grow"><div style="display:flex;gap:8px;flex-wrap:wrap">'+
+      LOGIN_SITES.map(x=>'<button class="btn sm" data-login-host="'+x.host+'">'+x.label+'</button>').join('')+
+      '</div></div></div>'+
+      '<div class="set-hd">站点 Cookie（存储于 &lt;exe 同级&gt;\\config\\cookies\\，按 HOST 分文件，含 HttpOnly）</div>'+
       '<div class="set-row"><div class="v grow"><div class="site-list" id="cookieList"><div style="color:#94a3b8;padding:4px 2px">加载中…</div></div></div></div>'+
-      '<div class="set-row"><div class="k">说明<small>去登录站点 → 顶部"登录完成"按钮保存</small></div><div class="v"><button class="btn sm" data-act="refresh-cookie">刷新</button></div></div>';
+      '<div class="set-row"><div class="k">说明<small>未登录也能解析的站点（如 B 站低码率）用上面的内置登录换高清晰度</small></div><div class="v"><button class="btn sm" data-act="refresh-cookie">刷新</button></div></div>';
   } else if(curPage==='download'){
     h+=row('画质上限（短边，超限自动降分辨率转码）',num('download.max_h',d.max_h,0,4320));
     h+=row('下载高度硬上限',num('download.max_dl_h',d.max_dl_h,0,4320));
@@ -906,6 +927,9 @@ function bindSetEvents(){
   });
   const refresh=page.querySelector('[data-act="refresh-cookie"]');
   if(refresh)refresh.addEventListener('click',loadCookieList);
+  page.querySelectorAll('[data-login-host]').forEach(b=>b.addEventListener('click',()=>{
+    INVOKE('open_login_site',{host:b.dataset.loginHost}).catch(err=>toast(err));
+  }));
   const clearCache=page.querySelector('[data-act="clear-cache"]');
   if(clearCache)clearCache.addEventListener('click',()=>toast('解析缓存清除（P1 接入）'));
 }

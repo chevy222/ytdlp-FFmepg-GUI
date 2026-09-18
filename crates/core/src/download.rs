@@ -218,15 +218,25 @@ pub fn parse_progress_line(line: &str) -> Option<Progress> {
     None
 }
 
+/// 完整的进度行正则。
+///
+/// yt-dlp 的进度行是**列对齐**的，数字字段带前导空格，实测输出形如：
+/// `[download]  45.2% of    2.72MiB at   1.02MiB/s ETA 00:00`
+/// —— `of` 后有 4 个空格、`at` 后有 2 个空格。早期实现写成 `of `（单个空格），
+/// 导致**每一行都失配、进度恒为 0%**。这里一律用 `\s+`/`\s*` 容忍对齐空格。
+///
+/// 百分号也做成可选小数：完成行是 `100% of ... in 00:00:03 at ...`（无小数点）。
 fn full_re() -> regex::Regex {
     regex::Regex::new(
-        r"^(\d+\.\d+)% of ~?([\d.]+)([KMG]i?B|B) at ([\d.]+)([KMG]i?B|B)/s ETA (\d+:\d+)",
+        r"^(\d+(?:\.\d+)?)%\s+of\s+~?([\d.]+)\s*([KMG]i?B|B)\s+at\s+([\d.]+)\s*([KMG]i?B|B)/s\s+ETA\s+(\d+:\d+)",
     )
     .expect("无效正则 full")
 }
 
+/// 无 ETA 的进度行（首行 `ETA Unknown`、完成后的汇总行等）。
 fn plain_re() -> regex::Regex {
-    regex::Regex::new(r"^(\d+\.\d+)% of ~?([\d.]+)([KMG]i?B|B)").expect("无效正则 plain")
+    regex::Regex::new(r"^(\d+(?:\.\d+)?)%\s+of\s+~?([\d.]+)\s*([KMG]i?B|B)")
+        .expect("无效正则 plain")
 }
 
 static FULL_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
@@ -295,6 +305,57 @@ pub fn newest_media_since(dir: &Path, since: std::time::SystemTime) -> Option<Pa
     files.into_iter().max_by_key(|(t, _)| *t).map(|(_, p)| p)
 }
 
+/// 取消清理：删除本次运行已经落盘的产物与分片残留（§UL-06）。
+///
+/// 只处理"修改时间不早于本次启动"（`started`）的文件：`--no-overwrites` 下重复
+/// 下载会复用输出目录里的既有文件（yt-dlp 报 "has already been downloaded"），
+/// 那种文件绝不能在取消时被删掉。同理，拿不到 mtime 时按"不是本次产物"处理 ——
+/// 宁可留下一个半成品，也不误删用户文件。
+///
+/// yt-dlp 正常收到终止信号时会自行清理 `.part`/`.ytdl`，但进程被
+/// `taskkill /T /F` 强杀时往往来不及，这里按同名前缀兜底扫一遍。
+fn cleanup_cancelled_outputs(
+    dests: &[PathBuf],
+    merged: &[PathBuf],
+    started: std::time::SystemTime,
+) {
+    let is_new = |p: &Path| -> bool {
+        std::fs::metadata(p)
+            .and_then(|m| m.modified())
+            .map(|t| t >= started)
+            .unwrap_or(false)
+    };
+    for p in merged.iter().chain(dests.iter()) {
+        if p.is_file() && is_new(p) {
+            let _ = std::fs::remove_file(p);
+        }
+        let dir = match p.parent() {
+            Some(d) => d,
+            None => continue,
+        };
+        let name = match p.file_name().and_then(|s| s.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        let part_prefix = format!("{name}.part");
+        let ytdl_name = format!("{name}.ytdl");
+        let rd = match std::fs::read_dir(dir) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        for entry in rd.flatten() {
+            let ep = entry.path();
+            let en = match ep.file_name().and_then(|s| s.to_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            if en.starts_with(&part_prefix) || en == ytdl_name {
+                let _ = std::fs::remove_file(&ep);
+            }
+        }
+    }
+}
+
 /// 下载结果。
 #[derive(Debug, Clone)]
 pub struct DownloadOutcome {
@@ -361,6 +422,9 @@ pub fn run_download(
     // 取消/等待
     let status = guard.wait()?;
     if cancel.load(Ordering::Relaxed) {
+        // 取消：清掉本次已经落盘的产物与分片残留。否则"取消"之后输出目录里
+        // 仍会多出一个视频，与用户对"取消"的预期不符。
+        cleanup_cancelled_outputs(&dest_paths, &merged_paths, started);
         return Err(CoreError::Cancelled);
     }
     if !status.success() {
@@ -818,10 +882,30 @@ mod tests {
 
     #[test]
     fn parse_progress_full_line() {
-        let p = parse_progress_line("[download]  45.2% of 123.4MiB at 5.2MiB/s ETA 00:15").unwrap();
+        // 以下都是 yt-dlp 2026.08.19 的**真实输出**（列对齐，数字字段带前导空格）。
+        // 旧实现把正则写成 `of `（单个空格）→ 全部失配 → 进度恒为 0%。
+        let p = parse_progress_line("[download]  45.2% of    2.72MiB at   1.02MiB/s ETA 00:02")
+            .unwrap();
         assert!((p.percent - 45.2).abs() < 0.01);
-        assert_eq!(p.speed.as_deref(), Some("5.2MiB/s"));
-        assert_eq!(p.eta.as_deref(), Some("00:15"));
+        assert_eq!(p.speed.as_deref(), Some("1.02MiB/s"));
+        assert_eq!(p.eta.as_deref(), Some("00:02"));
+
+        // 首行：speed 与 ETA 都是 Unknown → 走无 ETA 的 PLAIN 分支
+        let p = parse_progress_line("[download]   0.0% of    2.72MiB at  Unknown B/s ETA Unknown")
+            .unwrap();
+        assert_eq!(p.percent, 0.0);
+        assert!(p.speed.is_none());
+
+        // 完成行：百分比无小数、用 `in <耗时>` 而非 ETA
+        let p =
+            parse_progress_line("[download] 100% of    2.72MiB in 00:00:03 at 885.98KiB/s").unwrap();
+        assert_eq!(p.percent, 100.0);
+        assert!(p.speed.is_none());
+
+        // 并发/分片下载时总量是估算值，带 `~` 前缀
+        let p =
+            parse_progress_line("[download]  12.3% of ~123.45MiB at  1.23MiB/s ETA 00:12").unwrap();
+        assert!((p.percent - 12.3).abs() < 0.01);
     }
 
     #[test]

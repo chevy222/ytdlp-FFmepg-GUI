@@ -49,6 +49,7 @@ pub fn run() {
             commands::clear_done,
             commands::retry_item,
             commands::relogin_item,
+            commands::open_login_site,
             commands::get_config,
             commands::save_config,
             commands::list_cookies,
