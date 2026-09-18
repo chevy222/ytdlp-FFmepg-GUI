@@ -388,6 +388,7 @@ fn run_transcode_once(
 
     let mut cmd = resolver.command(Tool::Ffmpeg)?;
     cmd.args(&args);
+    cmd.arg(&out);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let mut guard = ChildGuard::spawn(&mut cmd)?;
