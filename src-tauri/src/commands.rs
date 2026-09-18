@@ -57,6 +57,37 @@ enum InstallPlan {
     Download(PathBuf),
 }
 
+/// 依赖页"链接"弹窗展示的地址（觉得下载慢时用户可手动下载）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ToolUrlInfo {
+    /// dependencies.* 配置键（与前端 data-tool 同名）
+    pub tool: String,
+    /// 显示名（yt-dlp / ffmpeg / …）
+    pub name: String,
+    /// 程序「下载/更新」实际使用的包地址
+    pub download_url: String,
+    /// 构建/发布页（人工查版本、手动下载的入口）
+    pub check_url: String,
+}
+
+/// 四个工具的下载/版本检查地址（纯常量，无网络请求）。
+#[tauri::command]
+pub fn tool_urls() -> CmdResult<Vec<ToolUrlInfo>> {
+    let keys = ["yt_dlp_path", "ffmpeg_path", "ffprobe_path", "deno_path"];
+    let mut out = Vec::with_capacity(keys.len());
+    for key in keys {
+        let kind =
+            ToolKind::from_config_key(key).ok_or_else(|| format!("内部错误：未知工具键 {key}"))?;
+        out.push(ToolUrlInfo {
+            tool: key.to_string(),
+            name: kind.tool().name().to_string(),
+            download_url: kind.url().to_string(),
+            check_url: kind.check_page_url().to_string(),
+        });
+    }
+    Ok(out)
+}
+
 /// 依赖页「下载 / 更新」（进度经 `tool:progress` 上报，下载中前端按钮变"取消"）。
 ///
 /// - `update=false`（下载）：固定装到 `<exe 同级>\tools\`；已有托管副本就直接返回

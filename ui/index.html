@@ -193,6 +193,11 @@
   .set-hd{font-size:11px;font-weight:600;color:var(--ink-48);letter-spacing:.4px;padding:16px 0 4px}
   .note{font-size:12px;line-height:1.6;color:var(--ink-48)}
   .modal.small .box{width:540px}
+  /* 工具链接弹窗 */
+  .urlrow{display:flex;gap:8px;align-items:center;margin-bottom:10px}
+  .urlrow .lbl{font-size:12px;color:var(--ink-2);width:158px;flex:none;line-height:1.4}
+  .urlrow input{flex:1;min-width:0;height:34px;border:1px solid var(--line);border-radius:var(--r-sm);padding:0 10px;font-size:12px;background:var(--pearl);color:var(--ink);font-family:ui-monospace,Consolas,monospace}
+  .urlrow .btn{flex:none}
   .merge-body{display:flex;gap:16px;padding:16px 24px;min-height:300px;overflow:auto}
   .merge-left{flex:1;min-width:0;display:flex;flex-direction:column;gap:8px}
   .merge-left h4{margin:0;font-size:13px;font-weight:600;color:var(--ink)}
@@ -343,6 +348,14 @@
     <div class="hd"><span id="fmtTitle">选择下载格式</span><span class="sp"></span><button class="btn sm" onclick="closeFmt()">关闭</button></div>
     <ul class="fmt-list" id="fmtList"></ul>
     <div class="ft"><span class="sp"></span><button class="btn primary" id="btnFmtOk" onclick="fmtOk()">按所选格式下载</button></div>
+  </div>
+</div>
+
+<!-- ===== 工具链接弹窗（下载/检查地址，可复制） ===== -->
+<div class="modal small" id="urlModal" onclick="if(event.target===this)closeUrlModal()">
+  <div class="box">
+    <div class="hd"><span id="urlTitle">工具链接</span><span class="sp"></span><button class="btn sm" onclick="closeUrlModal()">关闭</button></div>
+    <div class="bd stack" id="urlBody"></div>
   </div>
 </div>
 
@@ -805,6 +818,37 @@ document.getElementById('btnSecOk').addEventListener('click',()=>{
     .catch(err=>toast(err));
 });
 
+// ===== 工具链接（下载/检查地址，可复制，下载慢时可手动下载） =====
+function urlRowHtml(lbl,val,id){
+  return '<div class="urlrow"><div class="lbl">'+lbl+'</div>'+
+    '<input type="text" readonly id="'+id+'" value="'+esc(val)+'" onfocus="this.select()">'+
+    '<button class="btn sm" data-copy="'+id+'">复制</button></div>';
+}
+function copyInput(id){
+  const inp=document.getElementById(id);
+  inp.focus();inp.select();
+  const ok=()=>toast('已复制到剪贴板');
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(inp.value).then(ok).catch(()=>{try{document.execCommand('copy');ok();}catch(e){toast('复制失败，请手动 Ctrl+C');}});
+  }else{
+    try{document.execCommand('copy');ok();}catch(e){toast('复制失败，请手动 Ctrl+C');}
+  }
+}
+function openUrlModal(tool){
+  INVOKE('tool_urls').then(list=>{
+    const it=(list||[]).find(x=>x.tool===tool);
+    if(!it){toast('未找到该工具的链接信息');return;}
+    document.getElementById('urlTitle').textContent=it.name+' · 下载 / 检查地址';
+    document.getElementById('urlBody').innerHTML=
+      urlRowHtml('下载地址（「下载/更新」用的就是这个包）',it.download_url,'uDownload')+
+      urlRowHtml('构建页（查最新版本 / 手动挑文件）',it.check_url,'uCheck')+
+      '<div style="font-size:12px;color:var(--ink-48);line-height:1.6">手动下载后：ffmpeg/ffprobe 解压取 bin\\ 里的 exe；把 exe 路径填到依赖页输入框并保存即可，之后程序优先使用这一份。</div>';
+    document.getElementById('urlModal').classList.add('show');
+    document.getElementById('urlBody').querySelectorAll('[data-copy]').forEach(b=>b.addEventListener('click',()=>copyInput(b.dataset.copy)));
+  }).catch(err=>toast(err));
+}
+function closeUrlModal(){document.getElementById('urlModal').classList.remove('show');}
+
 // ===== 日志 =====
 let logId=null;
 function openLog(id){
@@ -862,11 +906,12 @@ function renderSetPage(){
   const toolRow=(key,label)=>'<div class="set-row"><div class="k">'+label+'</div><div class="v grow"><div class="toolrow">'+
     txt('dependencies.'+key,dp[key],'留空 = 系统 PATH')+
     '<button class="btn sm" data-act="tool-dl" data-tool="'+key+'">下载</button>'+
-    '<button class="btn sm" data-act="tool-up" data-tool="'+key+'">更新</button></div></div></div>';
+    '<button class="btn sm" data-act="tool-up" data-tool="'+key+'">更新</button>'+
+    '<button class="btn sm" data-act="tool-urls" data-tool="'+key+'" title="查看/复制下载地址，下载慢可手动下载">链接</button></div></div></div>';
 
   let h='';
   if(curPage==='deps'){
-    h+='<div class="set-hd">工具链（查找顺序：设置路径 → tools\\ → 系统 PATH；「下载」装到 tools\\ 并记住路径，「更新」只更新当前生效的那一份）</div>';
+    h+='<div class="set-hd">工具链（查找顺序：设置路径 → tools\\ → 系统 PATH；「下载」装到 tools\\ 并记住路径，「更新」只更新当前生效的那一份；下载慢可点「链接」复制地址手动下载）</div>';
     h+=toolRow('yt_dlp_path','yt-dlp 路径');
     h+=toolRow('ffmpeg_path','ffmpeg 路径');
     h+=toolRow('ffprobe_path','ffprobe 路径');
@@ -964,7 +1009,7 @@ function bindSetEvents(){
     }
     const isUpdate=b.dataset.act==='tool-up';
     const row=b.closest('.toolrow');
-    row.querySelectorAll('.btn').forEach(x=>{x.disabled=true;});
+    row.querySelectorAll('.btn:not([data-act="tool-urls"])').forEach(x=>{x.disabled=true;});
     b.disabled=false;
     b.dataset.act='tool-cancel';
     b.classList.add('danger');
@@ -982,6 +1027,7 @@ function bindSetEvents(){
       })
       .catch(err=>{toast(err);renderSetPage();refreshDeps();});
   }));
+  page.querySelectorAll('[data-act="tool-urls"]').forEach(b=>b.addEventListener('click',()=>openUrlModal(b.dataset.tool)));
   page.querySelectorAll('[data-site]').forEach(b=>b.addEventListener('change',()=>{
     const map=cfgRef().network.site_proxy||{}; map[b.dataset.site]=b.checked; cfgRef().network.site_proxy=map;
   }));

@@ -1,21 +1,22 @@
-//! 工具链托管下载（依赖页 下载/更新）：从官方 GitHub Release 下载
-//! yt-dlp / ffmpeg+ffprobe（BtbN Builds）/ deno，SHA-256 校验后原子激活
-//! （tmp + rename 覆盖）。
+//! 工具链托管下载（依赖页 下载/更新）：yt-dlp / deno 从官方 GitHub Release，
+//! ffmpeg/ffprobe 从 gyan.dev release 构建；下载后原子激活（tmp + rename 覆盖）。
 //!
 //! 安装位置由调用方给定：依赖页「下载」固定装到 `<exe 同级>\tools\`，
 //! 「更新」装到该工具**当前生效**的那个文件（设置里填的路径或托管副本）。
 //!
-//! "有没有新版本"的判定：
-//! - yt-dlp / deno 有版本号，直接比 release tag；
-//! - ffmpeg / ffprobe 是 BtbN 的滚动构建（tag 恒为 `latest`），只能比
-//!   "上次安装时的远端产物 SHA-256"（`tools/installed.json` 记录）。
+//! "有没有新版本"的判定（版本 feed）：
+//! - yt-dlp / deno：跟随 `releases/latest` 重定向取 tag；
+//! - ffmpeg / ffprobe：gyan.dev 的 `release-version` 纯文本 feed（内容即当前
+//!   release 版本号，如 `9.0.1`），与本地 `-version` 输出比对。
 //!
 //! 下载源（Windows x86_64）：
 //! - yt-dlp.exe：https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe
-//! - ffmpeg/ffprobe：https://github.com/BtbN/FFmpeg-Builds/.../ffmpeg-master-latest-win64-gpl.zip
+//! - ffmpeg/ffprobe：https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
+//!   （303 跳转到当版 `packages/ffmpeg-<ver>-essentials_build.zip`；两工具同包各取所需）
 //! - deno.exe：https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip
 //!
-//! SHA-256：各源均提供 `.sha256` 旁路文件（deno 缺失时跳过校验并记录）。
+//! SHA-256：yt-dlp / deno 有 `.sha256` 旁路文件；gyan.dev 没有 → ffmpeg/ffprobe
+//! 跳过产物校验，版本一致性由上面的版本 feed 比对保证。
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -23,6 +24,22 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::exec::Tool;
+
+/// ffmpeg/ffprobe 的下载包（gyan.dev release 别名，恒指向最新 release）。
+pub const FFMPEG_ZIP_URL: &str = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
+/// ffmpeg/ffprobe 的版本 feed：响应体即当前 release 版本号（如 `9.0.1`）。
+pub const FFMPEG_VERSION_FEED: &str = "https://www.gyan.dev/ffmpeg/builds/release-version";
+/// 人工查看/手动下载的构建页（依赖页"链接"按钮展示）。
+pub const FFMPEG_BUILDS_PAGE: &str = "https://www.gyan.dev/ffmpeg/builds/";
+
+/// 版本 feed 的种类。
+#[derive(Debug, Clone, Copy)]
+pub enum VersionFeed {
+    /// GitHub `releases/latest`：跟随重定向，取最终 URL 的 tag。
+    GithubLatest(&'static str),
+    /// 纯文本 feed：响应体就是版本号。
+    Text(&'static str),
+}
 
 /// 可托管的工具类型（依赖页四个入口）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,14 +83,15 @@ impl ToolKind {
     }
 
     /// 下载 URL。
+    ///
+    /// ffmpeg/ffprobe 用 gyan.dev 的 release 别名包（303 跳转到当版
+    /// `packages/ffmpeg-<ver>-essentials_build.zip`，ffmpeg 与 ffprobe 同包各取所需）。
     pub fn url(&self) -> &'static str {
         match self {
             Self::YtDlp => {
                 "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
             }
-            Self::Ffmpeg | Self::Ffprobe => {
-                "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
-            }
+            Self::Ffmpeg | Self::Ffprobe => FFMPEG_ZIP_URL,
             Self::Deno => {
                 "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"
             }
@@ -81,37 +99,53 @@ impl ToolKind {
     }
 
     /// SHA-256 校验文件 URL（可能不存在，404 时跳过校验）。
+    /// gyan.dev 不提供 `.sha256` 旁路文件 → ffmpeg/ffprobe 下载后不做产物校验，
+    /// "有没有新版本"改由 `release-version` 文本比对保证（见 [`Self::version_feed`]）。
     pub fn sha_url(&self) -> Option<&'static str> {
         match self {
             Self::YtDlp => Some(
                 "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe.sha256",
             ),
-            Self::Ffmpeg | Self::Ffprobe => Some(
-                "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip.sha256",
-            ),
+            Self::Ffmpeg | Self::Ffprobe => None,
             Self::Deno => Some(
                 "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip.sha256",
             ),
         }
     }
 
-    /// zip 压缩包内的目标文件路径（zip 型工具）。
-    pub fn zip_entry(&self) -> Option<&'static str> {
+    /// zip 压缩包内目标条目的**后缀**（大小写不敏感匹配）。
+    ///
+    /// gyan/BtbN 的包顶层目录带版本号（如 `ffmpeg-9.0.1-essentials_build/bin/ffmpeg.exe`），
+    /// 写死完整路径会随版本失效，只能按后缀选条目。
+    pub fn zip_entry_suffix(&self) -> Option<&'static str> {
         match self {
-            Self::Ffmpeg => Some("ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe"),
-            Self::Ffprobe => Some("ffmpeg-master-latest-win64-gpl/bin/ffprobe.exe"),
+            Self::Ffmpeg => Some("bin/ffmpeg.exe"),
+            Self::Ffprobe => Some("bin/ffprobe.exe"),
             Self::Deno => Some("deno.exe"),
             _ => None,
         }
     }
 
-    /// 发布页 `releases/latest` 地址（用于反查最新版本号）。
-    /// ffmpeg/ffprobe 走 BtbN 的滚动构建（tag 恒为 `latest`），没有版本号可比 → None。
-    pub fn latest_release_url(&self) -> Option<&'static str> {
+    /// 人工查看构建/发布页的地址（依赖页展示给用户，方便手动下载）。
+    pub fn check_page_url(&self) -> &'static str {
         match self {
-            Self::YtDlp => Some("https://github.com/yt-dlp/yt-dlp/releases/latest"),
-            Self::Deno => Some("https://github.com/denoland/deno/releases/latest"),
-            Self::Ffmpeg | Self::Ffprobe => None,
+            Self::YtDlp => "https://github.com/yt-dlp/yt-dlp/releases/latest",
+            Self::Ffmpeg | Self::Ffprobe => FFMPEG_BUILDS_PAGE,
+            Self::Deno => "https://github.com/denoland/deno/releases/latest",
+        }
+    }
+
+    /// 版本 feed（"有没有新版本"的数据源）。
+    pub fn version_feed(&self) -> Option<VersionFeed> {
+        match self {
+            Self::YtDlp => Some(VersionFeed::GithubLatest(
+                "https://github.com/yt-dlp/yt-dlp/releases/latest",
+            )),
+            Self::Deno => Some(VersionFeed::GithubLatest(
+                "https://github.com/denoland/deno/releases/latest",
+            )),
+            // gyan.dev 的版本 feed：纯文本，内容即当前 release 版本号（如 `9.0.1`）
+            Self::Ffmpeg | Self::Ffprobe => Some(VersionFeed::Text(FFMPEG_VERSION_FEED)),
         }
     }
 }
@@ -213,6 +247,21 @@ pub fn parse_release_tag(effective_url: &str) -> Option<String> {
     Some(tag.to_string())
 }
 
+/// 在 zip 条目名列表里选第一个以 `suffix` 结尾（大小写不敏感）的条目。
+///
+/// 包的顶层目录带版本号（gyan：`ffmpeg-9.0.1-essentials_build/bin/ffmpeg.exe`；
+/// deno 官方包内是裸 `deno.exe`），写死完整路径会随版本失效，只能按后缀选。
+pub fn select_zip_entry<'a, I>(names: I, suffix: &str) -> Option<String>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let suffix = suffix.to_ascii_lowercase();
+    names
+        .into_iter()
+        .find(|n| n.to_ascii_lowercase().ends_with(&suffix))
+        .map(str::to_string)
+}
+
 /// 工具托管下载器。
 #[derive(Debug, Clone)]
 pub struct ToolDownloader {
@@ -254,25 +303,43 @@ impl ToolDownloader {
     /// 远端最新版本号（读 `releases/latest` 的最终跳转地址）。
     /// 不支持的源（ffmpeg/ffprobe 是滚动构建）或查询失败返回 None。
     pub fn latest_version(&self, kind: ToolKind) -> Option<String> {
-        let url = kind.latest_release_url()?;
-        std::fs::create_dir_all(&self.temp_dir).ok()?;
-        // 文件名带工具名：同时点两个工具的"更新"时互不覆盖（进程 id 是同一个）
-        let head = self
-            .temp_dir
-            .join(format!("head-{}-{}.txt", kind.exe_name(), std::process::id()));
-        let mut cmd = std::process::Command::new("curl");
-        cmd.args(["-sIL", "--fail", "-o"])
-            .arg(&head)
-            .args(["-w", "%{url_effective}"])
-            .arg(url);
-        crate::exec::hide_console(&mut cmd);
-        let out = cmd.output().ok();
-        let _ = std::fs::remove_file(&head);
-        let out = out?;
-        if !out.status.success() {
-            return None;
+        match kind.version_feed()? {
+            VersionFeed::Text(url) => {
+                let mut cmd = std::process::Command::new("curl");
+                cmd.args(["-sS", "--fail", url]);
+                crate::exec::hide_console(&mut cmd);
+                let out = cmd.output().ok()?;
+                if !out.status.success() {
+                    return None;
+                }
+                let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if v.is_empty() {
+                    None
+                } else {
+                    Some(v)
+                }
+            }
+            VersionFeed::GithubLatest(url) => {
+                std::fs::create_dir_all(&self.temp_dir).ok()?;
+                // 文件名带工具名：同时点两个工具的"更新"时互不覆盖（进程 id 是同一个）
+                let head = self
+                    .temp_dir
+                    .join(format!("head-{}-{}.txt", kind.exe_name(), std::process::id()));
+                let mut cmd = std::process::Command::new("curl");
+                cmd.args(["-sIL", "--fail", "-o"])
+                    .arg(&head)
+                    .args(["-w", "%{url_effective}"])
+                    .arg(url);
+                crate::exec::hide_console(&mut cmd);
+                let out = cmd.output().ok();
+                let _ = std::fs::remove_file(&head);
+                let out = out?;
+                if !out.status.success() {
+                    return None;
+                }
+                parse_release_tag(&String::from_utf8_lossy(&out.stdout))
+            }
         }
-        parse_release_tag(&String::from_utf8_lossy(&out.stdout))
     }
 
     /// 远端产物 SHA-256（`.sha256` 旁路文件；404/网络失败返回 None）。
@@ -332,11 +399,11 @@ impl ToolDownloader {
 
         // 解压或直取
         if verify_zip {
-            let entry = kind
-                .zip_entry()
-                .ok_or_else(|| "内部错误：zip 型工具缺少目标条目".to_string())?;
+            let suffix = kind
+                .zip_entry_suffix()
+                .ok_or_else(|| "内部错误：zip 型工具缺少目标条目后缀".to_string())?;
             on_progress("解压".into(), 0.0);
-            let extracted = self.extract_from_zip(&raw, entry)?;
+            let extracted = self.extract_from_zip(&raw, suffix)?;
             on_progress("解压".into(), 1.0);
             let _ = std::fs::remove_file(&raw);
             self.activate(&extracted, dest, on_progress)?;
@@ -358,7 +425,7 @@ impl ToolDownloader {
         kind: ToolKind,
         on_progress: &mut dyn FnMut(String, f32),
     ) -> Result<(PathBuf, bool), String> {
-        let is_zip = kind.zip_entry().is_some();
+        let is_zip = kind.zip_entry_suffix().is_some();
         let ext = if is_zip { "zip" } else { "bin" };
         let raw = self
             .temp_dir
@@ -447,18 +514,29 @@ impl ToolDownloader {
         last_content_length(&text)
     }
 
-    /// 从 zip 提取单个条目到 temp 目录。
-    fn extract_from_zip(&self, zip_path: &Path, entry_name: &str) -> Result<PathBuf, String> {
+    /// 从 zip 提取目标条目（按 `suffix` 后缀匹配、大小写不敏感）到 temp 目录。
+    fn extract_from_zip(&self, zip_path: &Path, suffix: &str) -> Result<PathBuf, String> {
         let file =
             std::fs::File::open(zip_path).map_err(|e| format!("打开压缩包失败：{e}"))?;
         let mut archive =
             zip::ZipArchive::new(file).map_err(|e| format!("解析压缩包失败：{e}"))?;
+        // 先收集条目名再挑（顶层目录带版本号，如 ffmpeg-9.0.1-essentials_build/bin/ffmpeg.exe）
+        let names: Vec<String> = (0..archive.len())
+            .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
+            .collect();
+        let matched = select_zip_entry(names.iter().map(String::as_str), suffix)
+            .ok_or_else(|| format!("压缩包内未找到以 {suffix} 结尾的条目"))?;
         let mut entry = archive
-            .by_name(entry_name)
-            .map_err(|_| format!("压缩包内未找到 {entry_name}"))?;
-        let out = self
-            .temp_dir
-            .join(format!("extract-{}-{}", std::process::id(), std::path::Path::new(entry_name).file_name().and_then(|s| s.to_str()).unwrap_or("out")));
+            .by_name(&matched)
+            .map_err(|e| format!("压缩包内打开 {matched} 失败：{e}"))?;
+        let out = self.temp_dir.join(format!(
+            "extract-{}-{}",
+            std::process::id(),
+            std::path::Path::new(&matched)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("out")
+        ));
         let mut file = std::fs::File::create(&out).map_err(|e| format!("创建解压文件失败：{e}"))?;
         std::io::copy(&mut entry, &mut file).map_err(|e| format!("解压失败：{e}"))?;
         Ok(out)
@@ -540,13 +618,39 @@ mod tests {
     #[test]
     fn urls_and_entries() {
         assert!(ToolKind::YtDlp.url().ends_with("yt-dlp.exe"));
-        assert!(ToolKind::Ffmpeg.url().contains("ffmpeg-master-latest-win64-gpl.zip"));
+        // ffmpeg/ffprobe 走 gyan.dev 的 release 别名包，两工具同 URL 各取所需
+        assert_eq!(ToolKind::Ffmpeg.url(), FFMPEG_ZIP_URL);
+        assert_eq!(ToolKind::Ffprobe.url(), FFMPEG_ZIP_URL);
+        // gyan.dev 没有 .sha256 旁路文件 → 产物校验跳过，版本靠 release-version 比对
+        assert_eq!(ToolKind::Ffmpeg.sha_url(), None);
         assert_eq!(
-            ToolKind::Ffmpeg.zip_entry(),
-            Some("ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe")
+            ToolKind::Ffmpeg.version_feed(),
+            Some(VersionFeed::Text(FFMPEG_VERSION_FEED))
         );
-        assert_eq!(ToolKind::Deno.zip_entry(), Some("deno.exe"));
+        assert_eq!(ToolKind::Ffmpeg.zip_entry_suffix(), Some("bin/ffmpeg.exe"));
+        assert_eq!(ToolKind::Ffprobe.zip_entry_suffix(), Some("bin/ffprobe.exe"));
+        assert_eq!(ToolKind::Deno.zip_entry_suffix(), Some("deno.exe"));
         assert_eq!(ToolKind::YtDlp.exe_name(), "yt-dlp.exe");
+    }
+
+    #[test]
+    fn select_zip_entry_matches_suffix_case_insensitive() {
+        let names = [
+            "ffmpeg-9.0.1-essentials_build/",
+            "ffmpeg-9.0.1-essentials_build/bin/",
+            "ffmpeg-9.0.1-essentials_build/BIN/FFMPEG.EXE",
+            "ffmpeg-9.0.1-essentials_build/doc/ffmpeg.txt",
+        ];
+        // 大小写不敏感；同名目录不应误配（目录名以 / 结尾不会命中 .exe 后缀）
+        assert_eq!(
+            select_zip_entry(names, "bin/ffmpeg.exe").as_deref(),
+            Some("ffmpeg-9.0.1-essentials_build/BIN/FFMPEG.EXE")
+        );
+        assert_eq!(
+            select_zip_entry(["deno.exe", "LICENSE"], "deno.exe").as_deref(),
+            Some("deno.exe")
+        );
+        assert_eq!(select_zip_entry(["a/ffprobe.exe"], "bin/ffmpeg.exe"), None);
     }
 
     #[test]

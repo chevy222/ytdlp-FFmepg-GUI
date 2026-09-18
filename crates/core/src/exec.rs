@@ -308,7 +308,10 @@ fn version_arg(tool: Tool) -> &'static str {
 /// 从版本输出首行提取干净的版本号（状态栏直接显示，不含版权头）。
 ///
 /// - yt-dlp：首行即版本号（`2026.08.19`）
-/// - ffmpeg/ffprobe：`ffmpeg version 9.0 Copyright (c) …` → `version` 后的下一段
+/// - ffmpeg/ffprobe：`ffmpeg version 9.0 Copyright (c) …` → `version` 后的下一段。
+///   gyan.dev 构建的版本号形如 `9.0.1-full_build-www.gyan.dev`，取首个 `-` 前的
+///   版本段（`9.0.1`），才能与 `release-version` feed 直接比对；BtbN 滚动构建是
+///   `N-121772-g…`（不以数字开头），原样保留。
 /// - deno：`deno 2.1.4 (stable, release, …)` → `2.1.4`
 ///
 /// 取不到版本段时原样返回首行，保证状态栏不会出现空串。
@@ -318,7 +321,15 @@ pub fn parse_version_line(tool: Tool, first_line: &str) -> String {
         Tool::Ffmpeg | Tool::Ffprobe => line
             .split_whitespace()
             .skip_while(|t| !t.eq_ignore_ascii_case("version"))
-            .nth(1),
+            .nth(1)
+            .map(|tok| {
+                if tok.starts_with(|c: char| c.is_ascii_digit()) {
+                    // 9.0.1-full_build-www.gyan.dev → 9.0.1
+                    tok.split('-').next().unwrap_or(tok)
+                } else {
+                    tok
+                }
+            }),
         Tool::Deno => line
             .strip_prefix("deno")
             .map(str::trim)
@@ -549,6 +560,19 @@ mod tests {
         assert_eq!(parse_version_line(Tool::Ffprobe, ffprobe_line), "9.0");
         // deno 的首行是 "<名字> <版本> (构建信息)"
         assert_eq!(parse_version_line(Tool::Deno, "deno 2.1.4 (stable)"), "2.1.4");
+        // gyan.dev 构建：版本号带构建后缀，取首个 '-' 前的版本段（与 release-version feed 同口径）
+        assert_eq!(
+            parse_version_line(
+                Tool::Ffmpeg,
+                "ffmpeg version 9.0.1-full_build-www.gyan.dev Copyright (c) the FFmpeg developers"
+            ),
+            "9.0.1"
+        );
+        // BtbN 滚动构建（N- 开头，不以数字开头）：原样保留
+        assert_eq!(
+            parse_version_line(Tool::Ffmpeg, "ffmpeg version N-121772-g8f5c9a1e2a"),
+            "N-121772-g8f5c9a1e2a"
+        );
         // 取不到版本段时原样返回首行（不返回空串）
         assert_eq!(parse_version_line(Tool::Ffmpeg, "ffmpeg version"), "ffmpeg version");
     }
