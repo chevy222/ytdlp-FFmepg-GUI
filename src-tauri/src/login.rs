@@ -46,6 +46,11 @@ pub fn open_login(app: &AppHandle, host: &str, url: &str) -> Result<(), String> 
     .initialization_script(&script)
     .on_page_load(move |webview, payload| {
         let url = payload.url().to_string();
+        // 注入脚本里的"关闭"按钮
+        if url.contains("ytdlp-login-close") {
+            let _ = webview.close();
+            return;
+        }
         if url.contains("ytdlp-login-done") {
             let app = webview.app_handle().clone();
             if let Some(win) = app.get_webview_window("ytdlp-login") {
@@ -156,6 +161,18 @@ fn login_inject_script() -> String {
     hint.setAttribute('style', 'font-size:12px;color:rgba(255,255,255,0.9);');
     bar.appendChild(btn);
     bar.appendChild(hint);
+    // 右上角关闭按钮（解决 WebView2 卡死关不掉）
+    var closeBtn = document.createElement('button');
+    closeBtn.id = 'ytdlp-login-close';
+    closeBtn.textContent = '×';
+    closeBtn.setAttribute('style',
+      'position:fixed;top:6px;right:10px;z-index:2147483647;' +
+      'width:28px;height:28px;border:none;border-radius:6px;cursor:pointer;' +
+      'font-size:18px;font-weight:700;color:#fff;background:rgba(185,28,28,0.9);');
+    closeBtn.onclick = function () {
+      window.location.href = 'http://127.0.0.1/ytdlp-login-close';
+    };
+    (document.body || document.documentElement).appendChild(closeBtn);
     var root = document.body || document.documentElement;
     root.appendChild(bar);
   }
