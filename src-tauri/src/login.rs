@@ -61,9 +61,18 @@ pub fn open_login(app: &AppHandle, host: &str, url: &str) -> Result<(), String> 
     if let Some(pa) = proxy_arg {
         builder = builder.additional_browser_args(&pa);
     }
-    builder
+    let win = builder
         .build()
         .map_err(|e| format!("打开登录窗口失败：{}", e))?;
+    // 兜底：Esc 关闭登录窗（页面空白/挂起时也能关）
+    let w = win.clone();
+    win.on_window_event(move |e| {
+        if let tauri::window::WindowEvent::KeyboardInput { event: Some(ke), .. } = e {
+            if ke.key == tauri::utils::keyboard::Key::Escape {
+                let _ = w.close();
+            }
+        }
+    });
     Ok(())
 }
 
@@ -170,6 +179,20 @@ fn login_inject_script() -> String {
   }
   ensure();
   setInterval(ensure, 800);
+  function failHint() {
+    if (document.getElementById('ytdlp-fail-hint')) { return; }
+    if (document.readyState === 'complete' && document.body && document.body.childElementCount === 0) {
+      var el = document.createElement('div');
+      el.id = 'ytdlp-fail-hint';
+      el.textContent = '页面加载失败：请检查代理是否运行、该站点是否已勾选走代理。可点右上角 × 或按 Esc 关闭本窗口';
+      el.setAttribute('style',
+        'position:fixed;left:0;right:0;bottom:0;z-index:2147483646;' +
+        'background:#7f1d1d;color:#fff;font-family:system-ui,sans-serif;font-size:13px;' +
+        'padding:10px 16px;text-align:center;');
+      (document.body || document.documentElement).appendChild(el);
+    }
+  }
+  setInterval(failHint, 800);
 })();
 "#
     .to_string()
