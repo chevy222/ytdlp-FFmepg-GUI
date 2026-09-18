@@ -72,7 +72,7 @@ checkout → 安装 rust stable(+rustfmt,clippy) → 缓存
 
 ## 4. 质量基线
 
-- `cargo test -p ytdlp-core`：**139 个用例**（`#[cfg(test)]` 静态计数，分布：model 31、download 15、probe 13、transcode 11、config 12、history 10、cookies 7、exec 8、merge 8、worker 6、cli 5、paths 4、timefmt 4、tool_download 3、thumbs 2）。另有 `src-tauri`（login）4 个用例，`cargo test --workspace` 时一并执行（CI 门禁只跑 core）。
+- `cargo test -p ytdlp-core`：**142 个用例**（`#[cfg(test)]` 静态计数，分布：model 31、download 15、probe 13、config 12、transcode 11、exec 10、history 10、merge 8、cookies 7、worker 6、cli 5、paths 4、timefmt 4、tool_download 4、thumbs 2）。另有 `src-tauri`（login）4 个用例，`cargo test --workspace` 时一并执行（CI 门禁只跑 core）。
 - `cargo clippy -p ytdlp-core --all-targets -- -D warnings` 与 `cargo clippy -p ytdlp-gui --all-targets -- -D warnings` 均为 CI 门禁。
 - 核心层测试全部平台无关（不依赖 Windows 特有 API、不硬编码 `.exe` 后缀——按 `cfg(windows)` 断言）；涉及子进程的测试只做存在性/解析断言，不依赖外部工具是否安装。
 
@@ -97,8 +97,8 @@ checkout → 安装 rust stable(+rustfmt,clippy) → 缓存
 
 发版前在 Windows 真机按顺序走一遍（本仓库的自动化测试只覆盖核心层纯逻辑，外部工具链路需要真机验收）：
 
-1. 首次启动：exe 同级生成 `config/`、`temp/`、`tools/`；设置-依赖自检显示 yt-dlp / ffmpeg / ffprobe / deno 状态与版本。
-2. 依赖下载：设置-依赖 对四个工具执行"下载"，确认落在 `tools\` 且自检通过。
+1. 首次启动：exe 同级生成 `config/`、`temp/`、`tools/`；设置-依赖自检显示 yt-dlp / ffmpeg / ffprobe / deno 状态与版本——**PATH 里已安装的工具同样要显示"已找到"+ 干净版本号**（`tools\` 为空不应影响）。
+2. 依赖下载：设置-依赖 对四个工具执行"下载/更新"，下载中按钮显示"取消 <阶段> <百分比>"并持续前进（连接 → 下载 → 校验 → 解压 → 安装），确认落在 `tools\` 且自检通过。
 3. 下载：粘贴一个 URL → 5 秒倒计时自动下载 → 状态依次 解析中 → 已就绪 → 下载中 → 后处理中 → 已完成；产物出现在默认输出目录，条目 `path` 已回填（行内出现"转码"按钮）。
 4. 封面/画质列：条目缩略图出现，画质列显示 12 项源元数据（含采样率与音轨数）。
 5. 下载→转码：对刚下载的条目点"转码" → 产物回列表并标"已完成"；设置-转码勾选"保留封面"时产物仍带封面。

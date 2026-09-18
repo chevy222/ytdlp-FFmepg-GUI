@@ -165,7 +165,9 @@ impl ToolDownloader {
             let entry = kind
                 .zip_entry()
                 .ok_or_else(|| "内部错误：zip 型工具缺少目标条目".to_string())?;
+            on_progress("解压".into(), 0.0);
             let extracted = self.extract_from_zip(&raw, entry)?;
+            on_progress("解压".into(), 1.0);
             let _ = std::fs::remove_file(&raw);
             self.activate(kind, &extracted, on_progress)?;
             let _ = std::fs::remove_file(&extracted);
@@ -189,6 +191,8 @@ impl ToolDownloader {
             .temp_dir
             .join(format!("{}-{}.{}", kind.exe_name(), std::process::id(), ext));
         let url = kind.url();
+        // 先问总大小：拿不到（CDN 不给 content-length）时进度退化为阶段提示，不影响下载
+        let total = self.remote_size(url);
 
         on_progress("连接".into(), 0.0);
         // 用系统 curl（Windows 10+ 自带 curl.exe）下载，避免 TLS 库交叉编译问题
@@ -204,6 +208,10 @@ impl ToolDownloader {
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("无法调用 curl：{e}"))?;
+        // curl -sS 自身不输出进度，这里按已写入的字节数估算百分比上报，
+        // 否则整个下载过程前端只能停在 0%（大文件动辄几分钟）。
+        on_progress("下载".into(), 0.0);
+        let mut last_pct = 0.0f32;
         // 轮询等待 + 检查取消标志（点"取消"则 kill）
         loop {
             if let Some(flag) = &self.cancel {
@@ -212,6 +220,15 @@ impl ToolDownloader {
                     let _ = child.wait();
                     let _ = std::fs::remove_file(&raw);
                     return Err("已取消".to_string());
+                }
+            }
+            if let Some(total) = total.filter(|t| *t > 0) {
+                let done = std::fs::metadata(&raw).map(|m| m.len()).unwrap_or(0);
+                let pct = (done as f64 / total as f64).min(1.0) as f32;
+                // 限流：每前进 1% 才上报一次，避免 150ms 一条事件打爆前端
+                if pct - last_pct >= 0.01 {
+                    last_pct = pct;
+                    on_progress("下载".into(), pct);
                 }
             }
             match child
@@ -241,6 +258,20 @@ impl ToolDownloader {
         }
         on_progress("下载".into(), 1.0);
         Ok((raw, is_zip))
+    }
+
+    /// 查询远端文件总大小（HEAD 跟随重定向）。
+    /// 取不到（CDN 不给 content-length / 网络异常）返回 None，调用方退化为阶段提示。
+    fn remote_size(&self, url: &str) -> Option<u64> {
+        let mut cmd = std::process::Command::new("curl");
+        cmd.args(["-sIL", "--fail", url]);
+        crate::exec::hide_console(&mut cmd);
+        let out = cmd.output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        last_content_length(&text)
     }
 
     /// 取 SHA-256 期望值（网络失败/404 返回空，跳过校验）。
@@ -302,6 +333,22 @@ impl ToolDownloader {
     }
 }
 
+/// 从 curl `-I` 输出里取最后一个 `content-length`。
+/// 带 `-L` 时输出含每一次跳转的响应头，只有最终响应的大小是真实文件大小。
+fn last_content_length(headers: &str) -> Option<u64> {
+    headers
+        .lines()
+        .filter_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            if k.trim().eq_ignore_ascii_case("content-length") {
+                v.trim().parse::<u64>().ok()
+            } else {
+                None
+            }
+        })
+        .next_back()
+}
+
 fn sha256_hex(path: &Path) -> Result<String, std::io::Error> {
     use sha2::Digest;
     use std::io::BufReader;
@@ -346,5 +393,17 @@ mod tests {
     fn downloader_target_path() {
         let dl = ToolDownloader::new("/x/tools", "/x/temp");
         assert_eq!(dl.target_path(ToolKind::Deno), PathBuf::from("/x/tools/deno.exe"));
+    }
+
+    #[test]
+    fn last_content_length_takes_final_hop() {
+        // GitHub → S3 的两次跳转：302 只有 content-length: 0，最终响应才是文件大小
+        let head = concat!(
+            "HTTP/2 302\r\ncontent-length: 0\r\nlocation: https://example/x\r\n\r\n",
+            "HTTP/2 200\r\nContent-Length: 172693744\r\n",
+        );
+        assert_eq!(last_content_length(head), Some(172693744));
+        // 没有该头（分块传输 / HEAD 被拒）→ None，进度退化为阶段提示
+        assert_eq!(last_content_length("HTTP/2 200\r\ntransfer-encoding: chunked\r\n"), None);
     }
 }

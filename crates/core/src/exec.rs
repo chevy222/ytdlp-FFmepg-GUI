@@ -1,6 +1,7 @@
 //! 外部进程与工具链定位（§5.1/§3.6 依赖 / §4 安全性-路径参数化）。
 //!
-//! - 工具定位：config 指定路径（含 `<exe 同级>\tools\` 托管）优先，否则系统 PATH。
+//! - 工具定位：config 显式路径 → `<exe 同级>\tools\` 托管 → 系统 PATH，
+//!   任一级不存在即回退下一级（首次运行时 `tools\` 是空的，不能遮住 PATH）。
 //! - 进程执行：Command 参数化（不拼接 shell，防注入）；取消时终止进程树（Windows taskkill /T）。
 //! - 平台：Linux 上编译/测试，Windows 上生产运行；取消用条件编译。
 
@@ -46,13 +47,16 @@ impl Tool {
     }
 }
 
-/// 工具解析器：指定路径（config 依赖段）优先，否则 PATH 探测。
+/// 工具解析器：按 显式路径 → 托管目录 → PATH 三级解析。
 #[derive(Debug, Clone, Default)]
 pub struct ToolResolver {
+    /// 用户在设置页显式填写的路径（填了就必须存在，不存在报错而不是静默回退）
     yt_dlp: Option<PathBuf>,
     ffmpeg: Option<PathBuf>,
     ffprobe: Option<PathBuf>,
     deno: Option<PathBuf>,
+    /// `<exe 同级>\tools\` 托管目录；目录或其中某个 exe 缺失都是正常状态
+    tools_dir: Option<PathBuf>,
 }
 
 impl ToolResolver {
@@ -67,16 +71,13 @@ impl ToolResolver {
     }
 
     /// 显式指定工具根目录（tools/ 托管模式，exe 同级）。
+    /// 只登记为回退候选，不占用四个显式配置位——用户填写的路径仍最优先。
     pub fn with_tools_dir(mut self, tools_dir: impl Into<PathBuf>) -> Self {
-        let dir = tools_dir.into();
-        self.yt_dlp = self.yt_dlp.or(Some(dir.join(Tool::YtDlp.exe_name())));
-        self.ffmpeg = self.ffmpeg.or(Some(dir.join(Tool::Ffmpeg.exe_name())));
-        self.ffprobe = self.ffprobe.or(Some(dir.join(Tool::Ffprobe.exe_name())));
-        self.deno = self.deno.or(Some(dir.join(Tool::Deno.exe_name())));
+        self.tools_dir = Some(tools_dir.into());
         self
     }
 
-    /// 解析工具可执行文件路径（存在校验；未配置且 PATH 无 → Err）。
+    /// 解析工具可执行文件路径：显式路径 → 托管目录 → 系统 PATH。
     pub fn resolve(&self, tool: Tool) -> crate::Result<PathBuf> {
         let configured = match tool {
             Tool::YtDlp => self.yt_dlp.clone(),
@@ -88,10 +89,19 @@ impl ToolResolver {
             if p.is_file() {
                 return Ok(p);
             }
+            // 显式指定却不存在：明确报错（用户需要知道自己填错了），不回退
             return Err(CoreError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("{} 指定路径不存在：{}", tool.name(), p.display()),
             )));
+        }
+        // 托管目录可能不存在、也可能只托管了部分工具（依赖页按需下载），
+        // 因此这里只作候选：文件不在就继续回退 PATH，绝不让空目录把 PATH 遮死。
+        if let Some(dir) = &self.tools_dir {
+            let cand = dir.join(tool.exe_name());
+            if cand.is_file() {
+                return Ok(cand);
+            }
         }
         find_in_path(tool.exe_name()).ok_or_else(|| {
             CoreError::Io(std::io::Error::new(
@@ -269,16 +279,47 @@ pub fn run_tool_capture(
     run_capture(cmd)
 }
 
-/// 解析工具版本字符串（首行；ffmpeg/ffprobe 用 `-version`，其余用 `--version`）。
-pub fn tool_version(resolver: &ToolResolver, tool: Tool) -> Option<String> {
-    let arg = match tool {
+/// 版本探测参数：ffmpeg/ffprobe 用 `-version`，其余用 `--version`。
+fn version_arg(tool: Tool) -> &'static str {
+    match tool {
         Tool::Ffmpeg | Tool::Ffprobe => "-version",
         _ => "--version",
+    }
+}
+
+/// 从版本输出首行提取干净的版本号（状态栏直接显示，不含版权头）。
+///
+/// - yt-dlp：首行即版本号（`2026.08.19`）
+/// - ffmpeg/ffprobe：`ffmpeg version 9.0 Copyright (c) …` → `version` 后的下一段
+/// - deno：`deno 2.1.4 (stable, release, …)` → `2.1.4`
+///
+/// 取不到版本段时原样返回首行，保证状态栏不会出现空串。
+pub fn parse_version_line(tool: Tool, first_line: &str) -> String {
+    let line = first_line.trim();
+    let token = match tool {
+        Tool::Ffmpeg | Tool::Ffprobe => line
+            .split_whitespace()
+            .skip_while(|t| !t.eq_ignore_ascii_case("version"))
+            .nth(1),
+        Tool::Deno => line
+            .strip_prefix("deno")
+            .map(str::trim)
+            .and_then(|rest| rest.split_whitespace().next()),
+        Tool::YtDlp => line.split_whitespace().next(),
     };
-    let out = run_tool_capture(resolver, tool, &[arg]).ok()?;
+    token.unwrap_or(line).to_string()
+}
+
+/// 解析工具版本字符串（`-version` / `--version` 输出首行提取版本号）。
+pub fn tool_version(resolver: &ToolResolver, tool: Tool) -> Option<String> {
+    let out = run_tool_capture(resolver, tool, &[version_arg(tool)]).ok()?;
     let text = decode_text(&out.stdout);
-    let first = text.lines().next()?.trim().to_string();
-    Some(first)
+    let first = text.lines().next()?;
+    let v = parse_version_line(tool, first);
+    if v.is_empty() {
+        return None;
+    }
+    Some(v)
 }
 
 /// Windows 下隐藏子进程控制台窗口（CREATE_NO_WINDOW），避免 GUI 程序
@@ -371,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn with_tools_dir_fills_managed_paths() {
+    fn managed_dir_provides_its_tools() {
         let root = tempdir().unwrap();
         let tools = root.path().join("tools");
         std::fs::create_dir_all(&tools).unwrap();
@@ -399,6 +440,38 @@ mod tests {
         };
         let r = ToolResolver::from_config(&cfg).with_tools_dir(root.path());
         assert_eq!(r.resolve(Tool::Ffmpeg).unwrap(), custom);
+    }
+
+    #[test]
+    fn missing_managed_exe_falls_back_to_path() {
+        let root = tempdir().unwrap();
+        let tools = root.path().join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        let r = ToolResolver::default().with_tools_dir(&tools);
+        match r.resolve(Tool::Ffprobe) {
+            // 托管目录里没有 → 继续往 PATH 找，不能把 tools\ffprobe.exe 当成已找到
+            Ok(p) => assert!(
+                !p.starts_with(&tools),
+                "托管目录缺失时必须回退 PATH，而不是返回 {}",
+                p.display()
+            ),
+            // 也不该报"指定路径不存在"（那是显式配置才有的错误）
+            Err(e) => assert!(e.to_string().contains("未找到"), "应报 PATH 未找到：{e}"),
+        }
+    }
+
+    #[test]
+    fn parse_version_line_extracts_version_token() {
+        assert_eq!(parse_version_line(Tool::YtDlp, "2026.08.19"), "2026.08.19");
+        // ffmpeg/ffprobe 的首行带版权信息，只取 "version" 后的一段
+        let ffmpeg_line = "ffmpeg version 9.0 Copyright (c) 2000-2026 the FFmpeg developers";
+        assert_eq!(parse_version_line(Tool::Ffmpeg, ffmpeg_line), "9.0");
+        let ffprobe_line = "ffprobe version 9.0 Copyright (c) 2000-2026 the FFmpeg developers";
+        assert_eq!(parse_version_line(Tool::Ffprobe, ffprobe_line), "9.0");
+        // deno 的首行是 "<名字> <版本> (构建信息)"
+        assert_eq!(parse_version_line(Tool::Deno, "deno 2.1.4 (stable)"), "2.1.4");
+        // 取不到版本段时原样返回首行（不返回空串）
+        assert_eq!(parse_version_line(Tool::Ffmpeg, "ffmpeg version"), "ffmpeg version");
     }
 
     #[test]

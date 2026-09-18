@@ -172,6 +172,8 @@
   .set-row .toolrow{display:flex;align-items:center;gap:8px;flex:1;width:100%}
   .set-row .toolrow input[type=text]{width:auto;flex:1;min-width:0}
   .set-row .toolrow .btn.sm{padding:0 11px;white-space:nowrap;flex:none}
+  /* 下载中按钮文字随阶段/百分比变化，定宽避免整行宽度抖动 */
+  .set-row .toolrow .btn.sm[data-act="tool-cancel"]{min-width:126px;text-align:center}
   .set-row .chk2,.set-row .chk{display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;color:var(--ink-2);white-space:nowrap}
   .chk2 input,.chk input{accent-color:var(--pri);width:16px;height:16px;cursor:pointer}
   .site-list{border:1px solid var(--line-soft);border-radius:var(--r-md);padding:8px 10px;background:var(--parchment);flex:1;min-width:0}
@@ -294,7 +296,7 @@
 
   <!-- ===== 底部状态栏 ===== -->
   <div class="statusbar">
-    <span id="queueInfo">队列 0/3</span>
+    <span id="queueInfo" title="运行中任务数 / 最大并发数（设置-通用·并发任务数，下载/转码/合并共享额度）">运行中 0/3（并发上限）</span>
     <span class="sp"></span>
     <span id="depYt" class="dep bad">yt-dlp …</span>
     <span id="depFfmpeg" class="dep bad">ffmpeg …</span>
@@ -558,7 +560,7 @@ function renderBatch(){
 function renderQueue(){
   const running=S.items.filter(i=>['Downloading','PostProcessing','Transcoding','Merging'].includes(i.status)).length;
   const c=S.config&&S.config.general?S.config.general.concurrency:3;
-  document.getElementById('queueInfo').textContent='队列 '+running+'/'+c;
+  document.getElementById('queueInfo').textContent='运行中 '+running+'/'+c+'（并发上限）';
 }
 function pickLocalFiles(){
   window.__TAURI__.dialog.open({ multiple:true, directory:false,
@@ -1006,8 +1008,9 @@ function refreshDeps(){
     list.forEach(t=>{
       const el=elById[map[t.tool]]; if(!el)return;
       el.className='dep '+(t.ok?'ok':'bad');
-      const v=t.version?(' '+t.version.split('-')[0].replace(/^v/,'')):'（未找到）';
-      el.textContent=t.tool+v;
+      // 已解析到路径但版本探测失败时不能报"未找到"，否则会让人误以为工具不存在
+      el.textContent=t.tool+(t.ok?(t.version?(' '+t.version):'（已找到）'):'（未找到）');
+      el.title=t.path||'tools\\ 与系统 PATH 中均未找到';
     });
   }).catch(()=>{});
 }
@@ -1039,7 +1042,11 @@ async function init(){
     LISTEN('tool:progress', e=>{
       const p=e.payload; if(!p||!p.tool)return;
       const cancelBtn=document.querySelector('.toolrow [data-tool="'+p.tool+'"][data-act="tool-cancel"]');
-      if(cancelBtn)cancelBtn.textContent='取消 '+Math.round((p.percent||0)*100)+'%';
+      if(!cancelBtn)return;
+      const pct=Math.max(0,Math.min(100,Math.round((p.percent||0)*100)));
+      const phase=p.phase||'下载';
+      cancelBtn.textContent='取消 '+phase+' '+pct+'%';
+      cancelBtn.title=phase+' '+pct+'%';
     });
   }catch(err){ console.error(err); toast('初始化失败：'+err); }
 }
