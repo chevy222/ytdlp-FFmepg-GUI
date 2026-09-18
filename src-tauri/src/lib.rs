@@ -24,6 +24,7 @@ fn apply_cli(app: &tauri::AppHandle) {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // 第二实例：解析 argv 并把 URL/覆盖转发给已运行实例（§UL-09 单实例转发）
             let args: Vec<String> = argv.iter().skip(1).map(|s| s.to_string()).collect();
