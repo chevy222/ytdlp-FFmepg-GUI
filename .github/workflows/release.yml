@@ -30,6 +30,11 @@ jobs:
       - name: Clippy 质量门禁（-D warnings）
         run: cargo clippy -p ytdlp-core --all-targets -- -D warnings
 
+      # 同 build.yml：tauri-build 不为图标声明 rerun-if-changed，rust-cache 恢复的
+      # 旧 Windows 资源会被复用，导致 exe 图标停留在旧版本。构建前清理 GUI crate。
+      - name: 清除 GUI crate 增量产物（避免旧的 Windows 图标资源被缓存复用）
+        run: cargo clean -p ytdlp-gui
+
       - name: Release 构建
         run: cargo build --release
 

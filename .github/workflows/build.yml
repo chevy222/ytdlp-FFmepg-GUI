@@ -38,6 +38,13 @@ jobs:
           cargo install cargo-audit --locked --quiet
           cargo audit
 
+      # 图标是编译期嵌进 exe 的 Windows 资源。cargo 按 build script 声明的
+      # rerun-if-changed 判断是否重跑，而 tauri-build 不声明图标；rust-cache 恢复
+      # target/ 后旧的资源与产物会被判定为"最新"并被复用，导致 exe 图标永远是旧的。
+      # 构建前清理 GUI crate 产物，强制重新生成资源。（build.rs 已另加图标声明）
+      - name: 清除 GUI crate 增量产物（避免旧的 Windows 图标资源被缓存复用）
+        run: cargo clean -p ytdlp-gui
+
       - name: Release 构建
         run: cargo build --release
 
