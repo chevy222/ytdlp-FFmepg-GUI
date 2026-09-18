@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 pub const DIR_CONFIG: &str = "config";
 pub const DIR_TEMP: &str = "temp";
 pub const DIR_TOOLS: &str = "tools";
-pub const DIR_LOGS: &str = "logs";
 pub const DIR_COOKIES: &str = "cookies";
 pub const DIR_CACHE: &str = "cache";
 
@@ -49,10 +48,6 @@ impl Paths {
         self.root.join(DIR_TOOLS)
     }
 
-    pub fn logs_dir(&self) -> PathBuf {
-        self.root.join(DIR_LOGS)
-    }
-
     pub fn cookies_dir(&self) -> PathBuf {
         self.config_dir().join(DIR_COOKIES)
     }
@@ -75,7 +70,6 @@ impl Paths {
             self.config_dir(),
             self.temp_dir(),
             self.tools_dir(),
-            self.logs_dir(),
             self.cookies_dir(),
             self.cache_dir(),
         ] {
@@ -115,7 +109,6 @@ mod tests {
         assert_eq!(p.config_dir(), root.path().join("config"));
         assert_eq!(p.temp_dir(), root.path().join("temp"));
         assert_eq!(p.tools_dir(), root.path().join("tools"));
-        assert_eq!(p.logs_dir(), root.path().join("logs"));
         assert_eq!(p.cookies_dir(), root.path().join("config/cookies"));
         assert_eq!(p.cache_dir(), root.path().join("config/cache"));
         assert_eq!(p.config_file(), root.path().join("config/config.json"));
@@ -127,7 +120,7 @@ mod tests {
         let root = tempdir().unwrap();
         let p = Paths::from_root(root.path());
         p.ensure_dirs().unwrap();
-        for d in [DIR_CONFIG, DIR_TEMP, DIR_TOOLS, DIR_LOGS] {
+        for d in [DIR_CONFIG, DIR_TEMP, DIR_TOOLS] {
             assert!(root.path().join(d).is_dir(), "缺失目录 {}", d);
         }
         assert!(root.path().join("config/cookies").is_dir());

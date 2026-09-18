@@ -24,10 +24,9 @@
 ## 目录与数据存储（exe 同级）
 
 ```
-config/     config.json（设置）· history.json（列表/队列）· cookies/（站点 Cookie）· cache/（解析缓存）
+config/     config.json（设置）· history.json（列表/队列/条目日志）· cookies/（站点 Cookie）· cache/（解析缓存）
 temp/       下载分片 / 中间产物（任务结束清理，可一键清理残留）
 tools/      yt-dlp / ffmpeg / ffprobe / deno（托管模式工具链）
-logs/       运行日志
 ```
 
 ## 构建
