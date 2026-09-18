@@ -97,7 +97,7 @@
   /* ===== 底部状态栏 ===== */
   .statusbar{display:flex;align-items:center;gap:16px;padding:9px 14px;background:#f8fafc;border-top:1px solid var(--line);font-size:12px;color:var(--sub);flex-wrap:nowrap}
   .statusbar .sp{flex:1}
-  .statusbar .dep{display:inline-flex;align-items:center;gap:4px}
+  .statusbar .dep{display:inline-flex;align-items:center;gap:4px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .statusbar .dep.ok{color:var(--green)}
   .statusbar .dep.bad{color:var(--red)}
   .statusbar button{border:none;background:none;color:var(--sub);cursor:pointer;font-size:12px}
@@ -167,7 +167,7 @@
   .fmt-list li .s{font-size:11px;color:#94a3b8;font-weight:400;white-space:nowrap}
   .countdown{display:inline-block;margin-right:6px;font-size:11px;color:var(--teal);font-weight:700;vertical-align:middle}
   /* toast */
-  .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);background:#1f2937;color:#fff;font-size:13px;padding:9px 18px;border-radius:99px;opacity:0;pointer-events:none;transition:.2s;z-index:80;white-space:nowrap}
+  .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);background:#1f2937;color:#fff;font-size:13px;padding:9px 16px;border-radius:12px;opacity:0;pointer-events:none;transition:.2s;z-index:80;max-width:min(92vw,640px);white-space:normal;word-break:break-all;text-align:center;line-height:1.45}
   .toast.show{opacity:1;transform:translateX(-50%)}
   @media (max-width:900px){
     .col-meta{display:none}
@@ -883,7 +883,8 @@ function refreshDeps(){
     list.forEach(t=>{
       const el=elById[map[t.tool]]; if(!el)return;
       el.className='dep '+(t.ok?'ok':'bad');
-      el.textContent=t.tool+(t.version?' '+t.version:'（未找到）');
+      const v=t.version?(' '+t.version.split('-')[0].replace(/^v/,'')):'（未找到）';
+      el.textContent=t.tool+v;
     });
   }).catch(()=>{});
 }
