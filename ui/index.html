@@ -16,6 +16,7 @@
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{height:100%}
   body{font-family:"Segoe UI","Microsoft YaHei","PingFang SC","Noto Sans SC",system-ui,sans-serif;background:var(--bg);color:var(--ink);display:flex;flex-direction:column;overflow:hidden}
+  body.drag-over::after{content:"松开以添加文件 / 文件夹";position:fixed;inset:8px;border:2.5px dashed var(--teal);border-radius:14px;background:rgba(240,253,250,.94);display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:600;color:var(--teal);z-index:999;pointer-events:none}
   .app{flex:1;display:flex;flex-direction:column;min-height:0;background:#fff}
   /* ===== 顶部工具栏 ===== */
   .toolbar{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line);flex-wrap:nowrap}
@@ -532,6 +533,24 @@ document.getElementById('btnAddDir').addEventListener('click', ()=>{
 });
 document.getElementById('btnSettings').addEventListener('click', openSettings);
 document.getElementById('btnClearTemp').addEventListener('click', ()=>INVOKE('clear_temp').then(()=>toast('临时文件已清理')).catch(err=>toast(err)));
+// 拖放添加文件/文件夹（Tauri v2 webview onDragDropEvent）
+try{
+  const wv=window.__TAURI__.webview.getCurrentWebview();
+  wv.onDragDropEvent(e=>{
+    const t=e.payload.type;
+    if(t==='enter'||t==='over'){ document.body.classList.add('drag-over'); }
+    else if(t==='leave'){ document.body.classList.remove('drag-over'); }
+    else if(t==='drop'){
+      document.body.classList.remove('drag-over');
+      const paths=e.payload.paths;
+      if(paths&&paths.length){
+        INVOKE('add_local',{paths,recursive:true})
+          .then(()=>toast('已添加 '+paths.length+' 个路径（目录自动递归扫描）'))
+          .catch(err=>toast(err));
+      }
+    }
+  });
+}catch(err){ console.warn('drag-drop unavailable:',err); }
 document.getElementById('btnClearList').addEventListener('click', ()=>{
   if(!S.items.length){toast('列表已是空的');return;}
   if(!confirm('清空列表全部 '+S.items.length+' 个条目？'))return;
