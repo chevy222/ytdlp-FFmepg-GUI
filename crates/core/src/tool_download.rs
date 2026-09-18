@@ -100,8 +100,6 @@ impl ToolKind {
 pub struct ToolDownloader {
     pub tools_dir: PathBuf,
     pub temp_dir: PathBuf,
-    /// 代理地址（配置了就走代理，GitHub 直连国内常失败）
-    pub proxy: Option<String>,
 }
 
 impl ToolDownloader {
@@ -110,14 +108,7 @@ impl ToolDownloader {
         Self {
             tools_dir: tools_dir.into(),
             temp_dir: temp_dir.into(),
-            proxy: None,
         }
-    }
-
-    /// 设置代理（配置了 proxy_url 时调用）。
-    pub fn with_proxy(mut self, proxy: Option<String>) -> Self {
-        self.proxy = proxy.filter(|p| !p.is_empty());
-        self
     }
 
     /// 目标在 tools 目录的最终路径。
@@ -191,11 +182,7 @@ impl ToolDownloader {
         // 用系统 curl（Windows 10+ 自带 curl.exe）下载，避免 TLS 库交叉编译问题
         let out_str = raw.to_string_lossy().into_owned();
         let mut cmd = std::process::Command::new("curl");
-        cmd.args(["-L", "--fail", "-sS", "-o", &out_str]);
-        if let Some(proxy) = &self.proxy {
-            cmd.args(["--proxy", proxy]);
-        }
-        cmd.arg(url);
+        cmd.args(["-L", "--fail", "-sS", "-o", &out_str, url]);
         let output = cmd
             .output()
             .map_err(|e| format!("无法调用 curl：{e}"))?;
@@ -220,13 +207,10 @@ impl ToolDownloader {
     /// 取 SHA-256 期望值（网络失败/404 返回空，跳过校验）。
     fn fetch_sha(&self, kind: ToolKind) -> Option<String> {
         let url = kind.sha_url()?;
-        let mut cmd = std::process::Command::new("curl");
-        cmd.args(["-L", "--fail", "-sS"]);
-        if let Some(proxy) = &self.proxy {
-            cmd.args(["--proxy", proxy]);
-        }
-        cmd.arg(url);
-        let output = cmd.output().ok()?;
+        let output = std::process::Command::new("curl")
+            .args(["-L", "--fail", "-sS", url])
+            .output()
+            .ok()?;
         if !output.status.success() {
             return None;
         }

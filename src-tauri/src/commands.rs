@@ -39,30 +39,17 @@ pub fn probe_hw_encoders(app: AppHandle) -> CmdResult<serde_json::Value> {
 /// 工具链托管下载/更新（依赖页）：下载到 <exe 同级>\tools\，SHA-256 校验后原子激活。
 /// 进度通过 "tool:progress" 事件上报。`force=true` 覆盖已存在的工具。
 #[tauri::command]
-pub async fn download_tool(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    tool: String,
-    force: bool,
-) -> CmdResult<String> {
+pub async fn download_tool(app: AppHandle, tool: String, force: bool) -> CmdResult<String> {
     let kind = ToolKind::from_config_key(&tool)
         .ok_or_else(|| format!("未知工具键：{tool}"))?;
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_default();
-    let proxy = state
-        .config
-        .lock()
-        .unwrap()
-        .network
-        .proxy_url
-        .clone();
     let dl = ToolDownloader::new(
         exe_dir.join("tools"),
         exe_dir.join("temp").join("tool_dl"),
-    )
-    .with_proxy(Some(proxy));
+    );
     let app2 = app.clone();
     let t = tool.clone();
     let path = tauri::async_runtime::spawn_blocking(move || {
