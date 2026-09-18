@@ -172,14 +172,11 @@ pub struct NetworkConfig {
 
 impl NetworkConfig {
     /// 站点分流解析：返回该 URL 应使用的代理地址。
-    /// - 未配置任何分流站点：全局 proxy_url（空则直连）
-    /// - 已配置分流：命中站点且勾选 → proxy_url；其余一律直连
+    /// 白名单规则：仅分流中勾选（=走代理）的站点使用代理，其余一律直连；
+    /// 代理地址为空时全部直连。
     pub fn resolve_proxy(&self, url: &str) -> Option<String> {
         if self.proxy_url.is_empty() {
             return None;
-        }
-        if self.site_proxy.is_empty() {
-            return Some(self.proxy_url.clone());
         }
         let host = host_of(url)?;
         for (site, enabled) in &self.site_proxy {
@@ -304,15 +301,15 @@ mod tests {
     }
 
     #[test]
-    fn resolve_proxy_global_when_no_site_split() {
+    fn resolve_proxy_whitelist_only() {
+        // 未配置任何分流站点：即使代理地址非空也一律直连
         let n = NetworkConfig {
             proxy_url: "socks5://127.0.0.1:10808".into(),
             ..Default::default()
         };
-        assert_eq!(
-            n.resolve_proxy("https://www.bilibili.com/video/BV1xx"),
-            Some("socks5://127.0.0.1:10808".to_string())
-        );
+        assert_eq!(n.resolve_proxy("https://www.bilibili.com/video/BV1xx"), None);
+        assert_eq!(n.resolve_proxy("https://www.youtube.com/watch?v=abc"), None);
+        // 代理地址为空：全部直连
         assert_eq!(
             NetworkConfig::default().resolve_proxy("https://www.bilibili.com/video/BV1xx"),
             None
@@ -332,7 +329,7 @@ mod tests {
             n.resolve_proxy("https://www.youtube.com/watch?v=abc"),
             Some("socks5://127.0.0.1:10808".to_string())
         );
-        assert_eq!(n.resolve_proxy("https://vimeo.com/1"), None); // 未配置站点直连
+        assert_eq!(n.resolve_proxy("https://vimeo.com/1"), None); // 未配置站点一律直连
         assert_eq!(n.resolve_proxy("https://api.bilibili.com/x"), None); // 子域命中 false
     }
 
