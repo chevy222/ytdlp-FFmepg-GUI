@@ -103,7 +103,9 @@ impl ToolResolver {
 
     /// 解析并生成命令（已设好程序路径）。
     pub fn command(&self, tool: Tool) -> crate::Result<Command> {
-        Ok(Command::new(self.resolve(tool)?))
+        let mut cmd = Command::new(self.resolve(tool)?);
+        hide_console(&mut cmd);
+        Ok(cmd)
     }
 
     /// 全部工具是否可用（依赖自检，§3.8）。
@@ -231,7 +233,9 @@ fn kill_tree_of(child: &mut Child) {
     {
         let pid = child.id();
         // taskkill 需先不 kill 掉主进程句柄，直接用 PID 命令
-        let _ = Command::new("taskkill")
+        let mut tk = Command::new("taskkill");
+        hide_console(&mut tk);
+        let _ = tk
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .status();
     }
@@ -275,6 +279,21 @@ pub fn tool_version(resolver: &ToolResolver, tool: Tool) -> Option<String> {
     let text = decode_text(&out.stdout);
     let first = text.lines().next()?.trim().to_string();
     Some(first)
+}
+
+/// Windows 下隐藏子进程控制台窗口（CREATE_NO_WINDOW），避免 GUI 程序
+/// 调用 yt-dlp/ffmpeg 等控制台工具时黑窗口闪烁。
+pub fn hide_console(cmd: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
 }
 
 /// 子进程文本输出解码：优先 UTF-8；非法序列时 Windows 走 GBK（yt-dlp
