@@ -11,9 +11,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use ytdlp_core::config::AppConfig;
 use ytdlp_core::config::NetworkConfig;
 use ytdlp_core::cookies::CookieStore;
-use ytdlp_core::download::{
-    self, cleanup_on_cancel, post_process, probe_output, run_download, DownloadParams,
-};
+use ytdlp_core::download::{self, post_process, probe_output, run_download, DownloadParams};
 use ytdlp_core::exec::{ToolResolver, ToolSource};
 use ytdlp_core::merge::{self, MergeParams};
 use ytdlp_core::model::{ItemKind, MediaItem, Status};
@@ -552,7 +550,7 @@ fn run_probe(app: AppHandle, id: String) {
         }
     }
     // 解析阶段临时目录清理（cookie 文件现在持久存在 config/cookies/ 下，不删）
-    let _ = std::fs::remove_dir_all(&state.paths.task_temp_dir(&id));
+    let _ = std::fs::remove_dir_all(state.paths.task_temp_dir(&id));
     persist(&app);
 }
 
@@ -761,7 +759,7 @@ fn finish_download(
     app: &AppHandle,
     id: &str,
     result: Result<download::DownloadOutcome, CoreError>,
-    params: &DownloadParams,
+    _params: &DownloadParams,
 ) {
     let state = app.state::<AppState>();
     // 本次任务的最终产物（回填 path + 抽帧封面共用）
@@ -848,7 +846,7 @@ fn finish_download(
         }
     }
     // 任务结束：只清理本任务私有临时目录（cookie 文件持久存在 config/cookies/ 下，不删）
-    let _ = std::fs::remove_dir_all(&state.paths.task_temp_dir(id));
+    let _ = std::fs::remove_dir_all(state.paths.task_temp_dir(id));
     // 清理取消标志注册表条目（否则随任务数无限累积；也让后续 cancel_item
     // 的 cancel_flag 查询能正确区分"运行中"与"已结束"）
     state.cancels.lock().unwrap().remove(id);
