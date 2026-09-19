@@ -520,7 +520,7 @@ pub fn post_process(
     general: &GeneralConfig,
     cancel: &Arc<AtomicBool>,
     mut on_log: impl FnMut(String),
-) -> Result<PathBuf> {
+) -> Result<(PathBuf, MediaMeta)> {
     // 先解析产物（MD-06 与后处理共用一次探测）
     let probe = probe::probe_local(resolver, input, &mut on_log)
         .map_err(|e| CoreError::Io(std::io::Error::other(format!("产物解析失败：{}", e))))?;
@@ -540,7 +540,7 @@ pub fn post_process(
             .unwrap_or(false);
 
     if !need_downscale && !need_gain {
-        return Ok(input.to_path_buf());
+        return Ok((input.to_path_buf(), meta.clone()));
     }
 
     let out = input.with_extension("processed.mp4");
@@ -673,22 +673,22 @@ pub fn post_process(
             .unwrap_or_default();
         on_log(format!("后处理失败（保留原文件）：{}", err));
         let _ = std::fs::remove_file(&out);
-        return Ok(input.to_path_buf());
+        return Ok((input.to_path_buf(), meta.clone()));
     }
     // 产物校验（§1.3：校验成功后才原子替换）——能读出主视频流才算成功
     if !verify_video(resolver, &out) {
         on_log("后处理产物校验失败（保留原文件）".to_string());
         let _ = std::fs::remove_file(&out);
-        return Ok(input.to_path_buf());
+        return Ok((input.to_path_buf(), meta.clone()));
     }
     // 原子替换：Windows 上 std::fs::rename 直接覆盖已存在目标
     // （MOVEFILE_REPLACE_EXISTING），不再"先删后改名"——那样中途失败会连原文件一起丢。
     if let Err(e) = std::fs::rename(&out, input) {
         on_log(format!("后处理产物替换失败（保留原文件）：{e}"));
         let _ = std::fs::remove_file(&out);
-        return Ok(input.to_path_buf());
+        return Ok((input.to_path_buf(), meta.clone()));
     }
-    Ok(input.to_path_buf())
+    Ok((input.to_path_buf(), meta.clone()))
 }
 
 /// 产物校验：ffprobe 能解析且存在主视频流。

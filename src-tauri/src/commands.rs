@@ -739,23 +739,17 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
             log_item(&app2, &id, line);
         });
         match pp {
-            Ok(final_path) => {
+            Ok((final_path, meta)) => {
                 first = Some(final_path.clone());
                 outcome.output_paths = vec![final_path];
+                update_item(&app, &id, |it| {
+                    it.meta = meta;
+                });
             }
             Err(e) => {
                 finish_download(&app, &id, Err(e), &params);
                 return;
             }
-        }
-    }
-
-    // 产物解析（MD-06）
-    if let Some(path) = &first {
-        if let Ok(meta) = probe_output(&resolver, path, |l| log_item(&app, &id, l)) {
-            update_item(&app, &id, |it| {
-                it.meta = meta;
-            });
         }
     }
     finish_download(&app, &id, Ok(outcome), &params);
