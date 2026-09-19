@@ -632,6 +632,18 @@ pub(crate) fn parse_out_time_us(line: &str) -> Option<u64> {
     if let Some(v) = line.strip_prefix("out_time_ms=") {
         return v.trim().parse::<u64>().ok().map(|ms| ms * 1000);
     }
+    // 新版 ffmpeg 输出 out_time=HH:MM:SS.xx 格式
+    if let Some(v) = line.strip_prefix("out_time=") {
+        let v = v.trim();
+        let parts: Vec<&str> = v.split(':').collect();
+        if parts.len() == 3 {
+            let h: f64 = parts[0].parse().ok()?;
+            let m: f64 = parts[1].parse().ok()?;
+            let s: f64 = parts[2].parse().ok()?;
+            let total_us = ((h * 3600.0 + m * 60.0 + s) * 1_000_000.0) as u64;
+            return Some(total_us);
+        }
+    }
     None
 }
 
@@ -755,11 +767,16 @@ fn run_transcode_once(
         on_log("源时长未知，无法换算百分比进度".to_string());
     }
     let reader = std::io::BufReader::new(stdout);
+    let mut debug_lines = 0u8;
     for line in reader.lines() {
         let line = match line {
             Ok(l) => l,
             Err(_) => break,
         };
+        if debug_lines < 5 && !line.trim().is_empty() {
+            on_log(format!("[progress] {}", line.trim()));
+            debug_lines += 1;
+        }
         if cancel.load(Ordering::Relaxed) {
             guard.kill_tree();
             break;
