@@ -253,13 +253,74 @@ fn build_vf(rot: RotAngle, max_w: u32, max_h: u32) -> Option<String> {
     }
 }
 
-/// 构造 ffmpeg 参数（TC-03/TC-07/TC-08/TC-09/TC-10）。
-pub fn build_args(
+/// 转码执行层级（参考 BatchConverter convert_h265.bat MODE 1/2/3）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscodeTier {
+    /// MODE 1 全 GPU：QSV 解码 → vpp_qsv/scale_qsv → hevc_qsv（最快）
+    GpuQsv,
+    /// MODE 2 混合：QSV 解码 → hwdownload → CPU 滤镜 → hevc_qsv
+    HybridQsv,
+    /// MODE 3 全软件：CPU 解码 → CPU 滤镜 → libx265（总是可用）
+    Software,
+}
+
+impl TranscodeTier {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::GpuQsv => "全 GPU（QSV 解码 → vpp_qsv/scale_qsv → hevc_qsv）",
+            Self::HybridQsv => "混合（QSV 解码 → hwdownload → CPU 滤镜 → hevc_qsv）",
+            Self::Software => "全软件（CPU 解码 → CPU 滤镜 → libx265）",
+        }
+    }
+}
+
+/// 构造指定层级的 ffmpeg 参数（TC-03/TC-05/TC-07/TC-08/TC-10）。
+///
+/// 层级语义（与 convert_h265.bat 对齐）：
+/// - `GpuQsv`：`-hwaccel qsv -hwaccel_output_format qsv` → `vpp_qsv`（旋转）/
+///   `scale_qsv`（缩放）→ `hevc_qsv`，全程 GPU；
+/// - `HybridQsv`：`-hwaccel qsv`（QSV 帧进滤镜图）→ `hwdownload,format=nv12` →
+///   CPU 滤镜 → `hevc_qsv`；
+/// - `Software`：CPU 解码 → CPU 滤镜 → `libx265`（显式 nvenc/amf 也走本层，
+///   仅替换编码器，解码与滤镜留在 CPU）。
+///
+/// 旋转/上限表达式：`-noautorotate` + `-display_rotation 0` 双重禁用自动旋转，
+/// 旋转只由条目 `rot_angle` 驱动；vpp_qsv 先缩放后转置（尺寸表达式取转置前
+/// 的 iw/ih，与 CPU 链的转置前语义一致，见 bat 内注释）。
+pub fn build_args_for_tier(
     resolver: &ToolResolver,
     params: &TranscodeParams,
     meta: &MediaMeta,
+    tier: TranscodeTier,
 ) -> Result<Vec<String>> {
-    let (encoder, mut enc_args) = pick_encoder(resolver, &params.encoder_mode, params.low_power)?;
+    let rotated = params.rot_angle.degrees() != 0;
+    let hw = !matches!(tier, TranscodeTier::Software);
+
+    // —— 编码器与编码参数 ——
+    // QSV 层固定 hevc_qsv（ABR 码率三件套在下方按源码率装配）；
+    // 软件层按显式模式选择（auto 在软件层就是 libx265——QSV 已由上层尝试过）。
+    let (encoder, mut enc_args) = match tier {
+        TranscodeTier::Software => {
+            let mode = match params.encoder_mode.as_str() {
+                "nvenc" | "amf" => params.encoder_mode.as_str(),
+                _ => "libx265",
+            };
+            pick_encoder(resolver, mode, params.low_power)?
+        }
+        _ => {
+            let mut a: Vec<String> = vec![
+                "-preset".into(),
+                "veryfast".into(),
+                "-extbrc".into(),
+                "1".into(),
+            ];
+            if tier == TranscodeTier::GpuQsv && params.low_power {
+                a.push("-low_power".into());
+                a.push("1".into());
+            }
+            ("hevc_qsv".into(), a)
+        }
+    };
     if params.container == "mp4" && encoder == "libx265" {
         // hvc1 标签（Apple 兼容）。必须带 `:v:0`：不带流后缀的 `-tag:v`
         // 会落到封面流（mjpeg）上，mp4 封装报
@@ -267,25 +328,8 @@ pub fn build_args(
         enc_args.push("-tag:v:0".into());
         enc_args.push("hvc1".into());
     }
-    // 码率封顶（kbps）；封顶留空时用兜底码率作为 maxrate（兜底也为 0 则不限）
-    let cap = params
-        .brcap_kbps
-        .filter(|b| *b > 0)
-        .or_else(|| {
-            let d = params.br_default_kbps;
-            if d > 0 {
-                Some(d)
-            } else {
-                None
-            }
-        });
-    if let Some(br) = cap {
-        enc_args.push("-maxrate".into());
-        enc_args.push(format!("{}k", br));
-        enc_args.push("-bufsize".into());
-        enc_args.push(format!("{}k", br * 2));
-    }
-    // 音频增益（normalize_audio + 解析音量；接近满度/无音量不处理）
+
+    // —— 音频增益（normalize_audio + 解析音量；接近满度/无音量不处理）——
     let need_gain = params.normalize_audio
         && meta
             .audio_volume
@@ -299,14 +343,42 @@ pub fn build_args(
         None
     };
 
-    // 流映射（TC-08 封面跟随 / TC-10 保留全部音轨）：
-    // - 主视频与封面一律用**绝对流索引**：`0:t?` 在 MP4 上选不中 attached_pic
-    //   （实测输出只剩视频+音频），而 `0:v:0` 在封面流靠前时会选到封面；
-    // - 主视频需要滤镜且同时映射封面时，简单滤镜 `-vf` 与第二条视频流的 copy
-    //   不能共存（ffmpeg: Filtering and streamcopy cannot be used together），
-    //   必须改用 filter_complex 打标签；
-    // - 探测不到封面流（如 MKV 以附件形式存放封面）时回退 `0:t?` + `-c:t copy`。
-    let vf = build_vf(params.rot_angle, params.max_w, params.max_h);
+    // —— 滤镜链 ——
+    // CPU 链：旋转（transpose）→ 分辨率上限（旋转不变量 min(iw,ih)/max(iw,ih)，
+    // min 两两嵌套——ffmpeg 求值器 min/max 只收两个参数）。
+    let cpu_vf = build_vf(params.rot_angle, params.max_w, params.max_h);
+    // GPU 链：vpp_qsv 先缩放后转置（尺寸表达式取转置前的 iw/ih），180° 用两次
+    // transpose；scale_qsv 的 w/h 与 vpp_qsv 同式（表达式由 ffmpeg 求值）。
+    let gpu_vf: Option<String> = (tier == TranscodeTier::GpuQsv).then(|| {
+        let mut sc = "1".to_string();
+        if params.max_h > 0 {
+            sc = format!("min({},{}/min(iw,ih))", sc, params.max_h);
+        }
+        if params.max_w > 0 {
+            sc = format!("min({},{}/max(iw,ih))", sc, params.max_w);
+        }
+        let wsc = format!("floor(iw*{sc}/2)*2");
+        let hsc = format!("floor(ih*{sc}/2)*2");
+        match params.rot_angle.degrees() {
+            90 => format!("vpp_qsv=transpose=clock:w='{wsc}':h='{hsc}'"),
+            270 => format!("vpp_qsv=transpose=cclock:w='{wsc}':h='{hsc}'"),
+            180 => format!(
+                "vpp_qsv=transpose=clock,vpp_qsv=transpose=clock,scale_qsv=w='{wsc}':h='{hsc}'"
+            ),
+            _ => format!("scale_qsv=w='{wsc}':h='{hsc}'"),
+        }
+    });
+    let hybrid_main = (tier == TranscodeTier::HybridQsv)
+        .then(|| {
+            cpu_vf
+                .as_ref()
+                .map(|vf| format!("hwdownload,format=nv12,{vf}"))
+        })
+        .flatten();
+
+    // —— 流定位 ——
+    // 封面流（attached_pic）可能排在主视频前（yt-dlp 常见），绝对索引必须指向
+    // 真正的主视频；探测不到封面流（MKV 附件型）时回退 `0:t?` + `-c:t copy`。
     let main_idx = meta.video_stream_index;
     let cover_idx = if params.keep_cover {
         meta.cover_stream_index
@@ -314,56 +386,129 @@ pub fn build_args(
         None
     };
     let map_attachments = params.keep_cover && cover_idx.is_none();
+    let main_label = main_idx
+        .map(|i| format!("0:{i}"))
+        .unwrap_or_else(|| "0:v:0".into());
 
+    // —— 输入（解码层）——
     let mut args: Vec<String> = vec![
         "-hide_banner".into(),
-        // 旋转由条目 rot_angle 单一来源（§11.13）：禁用 autorotate，
-        // 避免源 rotate 标签叠加手动旋转造成双重旋转；产物 rotate 标签一并清除
+        // 旋转由条目 rot_angle 单一来源（§11.13）：-noautorotate 禁 ffmpeg 自动
+        // 转置，-display_rotation 0 清除源显示矩阵（ffmpeg 仍会复制该矩阵到
+        // 输出流，不清掉播放器会再转一次，实测见 bat 注释）
         "-noautorotate".into(),
-        "-i".into(),
-        params.input.to_string_lossy().into_owned(),
+        "-display_rotation".into(),
+        "0".into(),
     ];
-    let rotated = params.rot_angle.degrees() != 0;
-    match (&vf, cover_idx) {
-        (Some(filter), Some(ci)) => {
-            let src = main_idx
-                .map(|i| format!("0:{i}"))
-                .unwrap_or_else(|| "0:v:0".to_string());
-            args.push("-filter_complex".into());
-            if rotated {
-                // 封面流 copy 不会跟随 transpose —— 旋转时封面也过同一滤镜链，
-                // 重编码 mjpeg 保持 attached_pic 语义（见下方 -c:v:1）
-                args.push(format!("[{src}]{filter}[v];[0:{ci}]{filter}[cv]"));
+    if hw {
+        args.push("-hwaccel".into());
+        args.push("qsv".into());
+        if tier == TranscodeTier::GpuQsv {
+            args.push("-hwaccel_output_format".into());
+            args.push("qsv".into());
+        }
+    }
+    args.push("-i".into());
+    args.push(params.input.to_string_lossy().into_owned());
+    // 旋转 + 保留封面（hw 层）：QSV 帧无法进 CPU 滤镜，封面改由第二个软件解码
+    // 输入取出并旋转（与 bat 的 DIN 第二输入同思路）
+    let cover_reencode = rotated && cover_idx.is_some();
+    if cover_reencode {
+        args.push("-i".into());
+        args.push(params.input.to_string_lossy().into_owned());
+    }
+
+    // —— 主视频滤镜 + 流映射 ——
+    let cpu_vf_for_cover = || {
+        cpu_vf
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| "transpose=1".into())
+    };
+    match tier {
+        TranscodeTier::Software => {
+            // 软件层维持既有结构：旋转封面与主视频共用 filter_complex
+            match (&cpu_vf, cover_idx) {
+                (Some(filter), Some(ci)) => {
+                    let src = main_idx
+                        .map(|i| format!("0:{i}"))
+                        .unwrap_or_else(|| "0:v:0".to_string());
+                    args.push("-filter_complex".into());
+                    if rotated {
+                        // 封面流 copy 不会跟随 transpose —— 旋转时封面也过同一滤镜链，
+                        // 重编码 mjpeg 保持 attached_pic 语义（见下方 -c:v:1）
+                        args.push(format!("[{src}]{filter}[v];[0:{ci}]{filter}[cv]"));
+                        args.push("-map".into());
+                        args.push("[v]".into());
+                        args.push("-map".into());
+                        args.push("0:a?".into());
+                        args.push("-map".into());
+                        args.push("[cv]".into());
+                    } else {
+                        args.push(format!("[{src}]{filter}[v]"));
+                        args.push("-map".into());
+                        args.push("[v]".into());
+                        args.push("-map".into());
+                        args.push("0:a?".into());
+                        args.push("-map".into());
+                        args.push(format!("0:{ci}?"));
+                    }
+                }
+                _ => {
+                    if let Some(filter) = &cpu_vf {
+                        args.push("-vf".into());
+                        args.push(filter.clone());
+                    }
+                    args.push("-map".into());
+                    args.push(
+                        main_idx
+                            .map(|i| format!("0:{i}?"))
+                            .unwrap_or_else(|| "0:v:0?".to_string()),
+                    );
+                    args.push("-map".into());
+                    args.push("0:a?".into());
+                    if let Some(ci) = cover_idx {
+                        args.push("-map".into());
+                        args.push(format!("0:{ci}?"));
+                    }
+                }
+            }
+        }
+        TranscodeTier::GpuQsv => {
+            if let Some(f) = &gpu_vf {
+                args.push("-filter:v:0".into());
+                args.push(f.clone());
+            }
+            args.push("-map".into());
+            args.push(format!("{main_label}?"));
+            args.push("-map".into());
+            args.push("0:a?".into());
+            if rotated && cover_idx.is_some() {
+                // 封面从第二软件输入取，CPU 滤镜旋转
                 args.push("-map".into());
-                args.push("[v]".into());
-                args.push("-map".into());
-                args.push("0:a?".into());
-                args.push("-map".into());
-                args.push("[cv]".into());
-            } else {
-                args.push(format!("[{src}]{filter}[v]"));
-                args.push("-map".into());
-                args.push("[v]".into());
-                args.push("-map".into());
-                args.push("0:a?".into());
+                args.push(format!("1:{}?", cover_idx.unwrap()));
+                args.push("-filter:v:1".into());
+                args.push(cpu_vf_for_cover());
+            } else if let Some(ci) = cover_idx {
                 args.push("-map".into());
                 args.push(format!("0:{ci}?"));
             }
         }
-        _ => {
-            if let Some(filter) = &vf {
-                args.push("-vf".into());
-                args.push(filter.clone());
+        TranscodeTier::HybridQsv => {
+            if let Some(f) = &hybrid_main {
+                args.push("-filter:v:0".into());
+                args.push(f.clone());
             }
             args.push("-map".into());
-            args.push(
-                main_idx
-                    .map(|i| format!("0:{i}?"))
-                    .unwrap_or_else(|| "0:v:0?".to_string()),
-            );
+            args.push(format!("{main_label}?"));
             args.push("-map".into());
             args.push("0:a?".into());
-            if let Some(ci) = cover_idx {
+            if rotated && cover_idx.is_some() {
+                args.push("-map".into());
+                args.push(format!("1:{}?", cover_idx.unwrap()));
+                args.push("-filter:v:1".into());
+                args.push(cpu_vf_for_cover());
+            } else if let Some(ci) = cover_idx {
                 args.push("-map".into());
                 args.push(format!("0:{ci}?"));
             }
@@ -373,13 +518,54 @@ pub fn build_args(
         args.push("-map".into());
         args.push("0:t?".into());
     }
-    // 视频一律写 `-c:v:0`：封面流作为第二条视频流单独处理——
-    // 不旋转时 copy 保质量；旋转时封面已过滤镜链，重编码 mjpeg 并显式
-    // 标回 attached_pic（转码后 disposition 不会自动延续）
+
+    // —— 编码器 / 封面编码 / 音频 ——
     args.push("-c:v:0".into());
     args.push(encoder);
     args.extend(enc_args);
-    if cover_idx.is_some() {
+    if hw {
+        // QSV 层码率三件套：源码率（缺省用兜底码率），封顶截断；
+        // maxrate = 1.2×、bufsize = 2×（bat 同款）
+        let src = meta
+            .vbitrate_kbps
+            .or_else(|| {
+                if params.br_default_kbps > 0 {
+                    Some(params.br_default_kbps)
+                } else {
+                    None
+                }
+            })
+            .map(|src| match params.brcap_kbps.filter(|c| *c > 0) {
+                Some(cap) => src.min(cap),
+                None => src,
+            })
+            .filter(|kb| *kb > 0);
+        if let Some(kb) = src {
+            let maxkb = kb * 12 / 10;
+            args.push("-b:v".into());
+            args.push(format!("{kb}k"));
+            args.push("-maxrate".into());
+            args.push(format!("{maxkb}k"));
+            args.push("-bufsize".into());
+            args.push(format!("{}k", kb * 2));
+        }
+        if params.container == "mp4" {
+            args.push("-tag:v:0".into());
+            args.push("hvc1".into());
+        }
+        if rotated && cover_idx.is_some() {
+            // 旋转过的封面已重编码，显式标回 attached_pic
+            args.push("-c:v:1".into());
+            args.push("mjpeg".into());
+            args.push("-q:v:1".into());
+            args.push("2".into());
+            args.push("-disposition:v:1".into());
+            args.push("attached_pic".into());
+        } else if cover_idx.is_some() {
+            args.push("-c:v:1".into());
+            args.push("copy".into());
+        }
+    } else if cover_idx.is_some() {
         if rotated {
             args.push("-c:v:1".into());
             args.push("mjpeg".into());
@@ -406,7 +592,8 @@ pub fn build_args(
     }
     args.push("-map_metadata".into());
     args.push("0".into());
-    // 配合 -noautorotate：清除源 rotate 标签，防止播放器再按标签自动转一次
+    // 配合 -noautorotate / -display_rotation：清除源 rotate 标签，
+    // 防止播放器再按标签自动转一次
     args.push("-metadata:s:v:0".into());
     args.push("rotate=0".into());
     match params.container.as_str() {
@@ -431,6 +618,15 @@ pub fn build_args(
     Ok(args)
 }
 
+/// 软件层参数（既有入口；单测与旧调用方共用）。
+pub fn build_args(
+    resolver: &ToolResolver,
+    params: &TranscodeParams,
+    meta: &MediaMeta,
+) -> Result<Vec<String>> {
+    build_args_for_tier(resolver, params, meta, TranscodeTier::Software)
+}
+
 /// 解析 `-progress` 输出中的 `out_time_us=`（微秒）。
 pub(crate) fn parse_out_time_us(line: &str) -> Option<u64> {
     let line = line.trim();
@@ -446,8 +642,9 @@ pub(crate) fn parse_out_time_us(line: &str) -> Option<u64> {
 /// 执行转码。
 ///
 /// 返回输出路径；取消时终止子进程树并删除输出残留（UL-06）；失败删除半成品保留原文件。
-/// 执行转码（TC-16 硬编失败自动回退 libx265：显式 NVENC/AMF 或自动探测
-/// 出的 QSV 运行时失败，非取消时用 CPU 编码重试一次，进度/日志延续）。
+/// 层级协商（TC-16，参考 bat 的 MODE 1/2/3）：`auto` 且本机 QSV 可用时依次尝试
+/// 全 GPU → 混合 → 全软件，任一层成功即锁定产物；显式 nvenc/amf/libx265 只跑
+/// 软件解码+滤镜的单层（解码与滤镜留在 CPU，按用户选择不自动回落）。
 pub fn run_transcode(
     resolver: &ToolResolver,
     params: &TranscodeParams,
@@ -456,25 +653,42 @@ pub fn run_transcode(
     mut on_progress: impl FnMut(f32),
     mut on_log: impl FnMut(String),
 ) -> Result<PathBuf> {
-    match run_transcode_once(
-        resolver,
-        params,
-        meta,
-        cancel,
-        &mut on_progress,
-        &mut on_log,
-    ) {
-        Err(e)
-            if !matches!(e, CoreError::Cancelled)
-                && !matches!(params.encoder_mode.as_str(), "libx265") =>
-        {
-            on_log("硬编失败，自动回退 libx265 重试…".to_string());
-            let mut p2 = params.clone();
-            p2.encoder_mode = "libx265".into();
-            run_transcode_once(resolver, &p2, meta, cancel, &mut on_progress, &mut on_log)
+    let explicit = matches!(
+        params.encoder_mode.as_str(),
+        "libx265" | "nvenc" | "amf"
+    );
+    let auto_qsv = !explicit && qsv_available(resolver).unwrap_or(false);
+    let tiers: &[TranscodeTier] = if explicit || !auto_qsv {
+        &[TranscodeTier::Software]
+    } else {
+        &[TranscodeTier::GpuQsv, TranscodeTier::HybridQsv, TranscodeTier::Software]
+    };
+    for (i, tier) in tiers.iter().enumerate() {
+        let r = run_transcode_once(
+            resolver,
+            params,
+            meta,
+            cancel,
+            *tier,
+            &mut on_progress,
+            &mut on_log,
+        );
+        match r {
+            Ok(p) => return Ok(p),
+            Err(CoreError::Cancelled) => return Err(CoreError::Cancelled),
+            Err(e) => {
+                if i + 1 < tiers.len() {
+                    on_log(format!(
+                        "{} 失败（{e}），自动回落下一层级…",
+                        tier.label()
+                    ));
+                } else {
+                    return Err(e);
+                }
+            }
         }
-        r => r,
     }
+    unreachable!("层级序列非空")
 }
 
 fn run_transcode_once(
@@ -482,13 +696,14 @@ fn run_transcode_once(
     params: &TranscodeParams,
     meta: &MediaMeta,
     cancel: &Arc<AtomicBool>,
+    tier: TranscodeTier,
     on_progress: &mut dyn FnMut(f32),
     on_log: &mut dyn FnMut(String),
 ) -> Result<PathBuf> {
     let out = params.output_path()?;
-    let args = build_args(resolver, params, meta)?;
+    let args = build_args_for_tier(resolver, params, meta, tier)?;
     on_log(format!(
-        "转码 {} → {}（{}）",
+        "转码 {} → {}（{}，{}）",
         params
             .input
             .file_name()
@@ -497,7 +712,8 @@ fn run_transcode_once(
         out.file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default(),
-        params.encoder_mode
+        params.encoder_mode,
+        tier.label(),
     ));
     // 实际执行的完整命令（含输出路径，build_args 不含）
     let mut full = args.clone();
@@ -811,5 +1027,50 @@ mod tests {
         assert_eq!(parse_out_time_us("out_time_us=1234567"), Some(1234567));
         assert_eq!(parse_out_time_us("out_time_ms=999"), Some(999000));
         assert_eq!(parse_out_time_us("progress=end"), None);
+    }
+
+    #[test]
+    fn gpu_tier_uses_full_qsv_pipeline() {
+        let mut params = mk();
+        params.rot_angle = RotAngle::from_degrees(90);
+        let meta = MediaMeta {
+            video_stream_index: Some(0),
+            ..Default::default()
+        };
+        let args = build_args_for_tier(
+            &ToolResolver::default(),
+            &params,
+            &meta,
+            TranscodeTier::GpuQsv,
+        )
+        .unwrap();
+        let j = args.join(" ");
+        assert!(j.contains("-hwaccel qsv -hwaccel_output_format qsv"), "{}", j);
+        assert!(j.contains("-filter:v:0 vpp_qsv=transpose=clock"), "{}", j);
+        assert!(j.contains("hevc_qsv"), "{}", j);
+        assert!(j.contains("-display_rotation 0"), "{}", j);
+    }
+
+    #[test]
+    fn hybrid_tier_downloads_frames_to_cpu() {
+        let meta = MediaMeta {
+            video_stream_index: Some(0),
+            ..Default::default()
+        };
+        let mut params = mk();
+        params.max_w = 1920;
+        params.max_h = 1080;
+        let args = build_args_for_tier(
+            &ToolResolver::default(),
+            &params,
+            &meta,
+            TranscodeTier::HybridQsv,
+        )
+        .unwrap();
+        let j = args.join(" ");
+        assert!(j.contains("-hwaccel qsv "), "{}", j);
+        assert!(!j.contains("-hwaccel_output_format"), "{}", j);
+        assert!(j.contains("hwdownload,format=nv12,"), "{}", j);
+        assert!(j.contains("hevc_qsv"), "{}", j);
     }
 }

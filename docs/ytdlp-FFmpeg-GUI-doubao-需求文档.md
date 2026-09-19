@@ -83,7 +83,7 @@
 | TC-11 | 输出到默认输出目录；命名沿用 DL-10 模板（本地条目"标题+ID"用标题哈希作短指纹）；碰撞策略 `auto_inc`（`name (1).ext` 递增，上限 999）或 `skip`（已存在即报错跳过）；成功产物作为新条目（`TranscodeOut`）回到列表 | `transcode.rs::output_path` / `apply_filename_template`、`commands.rs::finish_transcode` |
 | TC-12 | 输出文件名清洗 Windows 非法字符、去尾部点号、截断 120 字符 | `transcode.rs::sanitize_filename` |
 | TC-13 | 硬件编码器探测（`ffmpeg -encoders` → QSV/NVENC/AMF），设置页对未检测到的选项标注"（未检测到）"但仍可选 | `transcode.rs::parse_encoders_output`、`commands.rs::probe_hw_encoders` |
-| TC-14 | 硬编失败自动回退：非取消且当前不是 libx265 时，用 libx265 重试一次（进度与日志延续） | `transcode.rs::run_transcode` |
+| TC-14 | 三层级硬编链路（参考 convert_h265.bat MODE 1/2/3）：`auto` 且 QSV 可用时依次尝试 **全 GPU**（`-hwaccel qsv -hwaccel_output_format qsv` → `vpp_qsv`/`scale_qsv` → `hevc_qsv`）→ **混合**（`-hwaccel qsv` → `hwdownload,format=nv12` → CPU 滤镜 → `hevc_qsv`）→ **全软件**（CPU → `libx265`），任一层成功即用其产物，失败逐层回落（进度与日志延续）；显式 nvenc/amf/libx265 只跑软件解码+滤镜的单层（解码与滤镜留在 CPU）。QSV 层码率三件套：`-b:v`（源码率，缺省用兜底码率，封顶截断）/`-maxrate`(1.2×)/`-bufsize`(2×)；`-low_power` 仅全 GPU 层 | `transcode.rs::run_transcode`/`TranscodeTier` |
 | TC-15 | 进度：`-progress pipe:1 -nostats`，按 `out_time_us` 相对探测时长换算百分比；取消终止进程树并删除半成品 | `transcode.rs::run_transcode_once` |
 
 ## 5. 合并能力（MG）
@@ -214,7 +214,7 @@ ytdlp-FFmpeg-GUI --url <URL> [--url <URL> ...] [--cookies <path>] [--dir <path>]
 10. **`--js-runtimes deno:<path>` 必须显式传**：yt-dlp 默认只认 PATH 里的 deno，托管在 `tools\` 的 deno 不传等于没配。
 11. **登录窗注入脚本要保活重建**：SPA 路由变化不触发页面加载事件，靠 `setInterval(800ms)` 自检重建按钮与提示条。
 12. **JSON 原子写用单次 rename**，不要"先删后改名"（中间失败会丢整份文件）。
-13. **已知限制**：未禁用 ffmpeg 的 autorotate。源文件自带 `rotate` 标记时，ffmpeg 会先按显示矩阵自动旋转，此时再叠加用户手动旋转会导致双重旋转。`MediaMeta.rotate_tag` 已记录源标记，后续可据此决定是否加 `-noautorotate` 并用它初始化 `rot_angle`。
+13. **旋转单一来源已落地**：转码所有层级均带 `-noautorotate` + `-display_rotation 0`（输入选项，清除源显示矩阵），产物再以 `-metadata:s:v:0 rotate=0` 清标签——源 `rotate` 标记不会叠加用户手动旋转；`MediaMeta.rotate_tag` 仍采集备用。
 14. **日期/时间戳一律走 `timefmt`**（epoch 秒 + 本地时区偏移；Windows 读注册表 `ActiveTimeBias`，含夏令时；其余平台按 UTC）。std 不提供本地时区，直接按 UTC 手算日期在东八区 0:00–8:00 会差一天（合并默认名、`日期-标题` 模板、`updated_at` 均受影响）。
 15. **锁纪律**：`history` 等全局 `std::sync::Mutex` 不可重入——持锁期间不做文件 IO、不 `emit` 事件、不调用会再次加锁的函数（`log_item`/`update_item` 先出锁再调用），否则当场死锁冻结 UI。
 16. **托管 `tools\` 目录只能当"回退候选"，不能占用显式配置位**：`ToolResolver::with_tools_dir` 只登记目录；`resolve` 顺序为 显式路径 → 托管目录 → 系统 PATH，托管文件不存在必须继续走 `find_in_path`。一旦把 `tools\<工具名>` 塞进"已配置路径"位，首次运行时空的 `tools\` 会让四个工具全部报"未找到"（而 PATH 里明明有），`--js-runtimes deno:<path>` 也会因此拿不到 PATH 里的 deno。
