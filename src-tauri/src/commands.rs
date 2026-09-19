@@ -721,7 +721,7 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
     };
 
     // 后处理（DL-04）
-    let mut first = outcome.output_paths.first().cloned();
+    let first = outcome.output_paths.first().cloned();
     if outcome.preexisting {
         // 重复下载同一 URL：yt-dlp 未覆盖既有文件（--no-overwrites），
         // 此时不做后处理，避免原地重编码覆盖用户既有文件
@@ -740,7 +740,6 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
         });
         match pp {
             Ok((final_path, meta)) => {
-                first = Some(final_path.clone());
                 outcome.output_paths = vec![final_path];
                 update_item(&app, &id, |it| {
                     it.meta = meta;
