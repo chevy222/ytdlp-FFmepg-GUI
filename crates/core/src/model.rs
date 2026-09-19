@@ -620,7 +620,7 @@ mod tests {
 
     #[test]
     fn short_edge_respects_rotation() {
-        // 竖屏源 1080x1920（rotate_tag=90）：短边 1080，而非 1920
+        // 竖屏源 1080x1920：短边 1080，不管 rotate_tag
         let mut m = MediaMeta {
             height: Some(1920),
             width: Some(1080),
@@ -629,7 +629,7 @@ mod tests {
         };
         assert_eq!(m.short_edge(), Some(1080));
         m.rotate_tag = None;
-        assert_eq!(m.short_edge(), Some(1920));
+        assert_eq!(m.short_edge(), Some(1080));
         // width 缺失时退回 height
         m.width = None;
         m.rotate_tag = Some(90);

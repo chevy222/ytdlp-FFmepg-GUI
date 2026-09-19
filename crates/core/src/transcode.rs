@@ -745,7 +745,6 @@ fn run_transcode_once(
     {
         let err_buf = err_buf.clone();
         std::thread::spawn(move || {
-            use std::io::Read;
             let mut reader = std::io::BufReader::new(stderr);
             let mut chunk = Vec::new();
             while reader.read_until(b'\n', &mut chunk).is_ok() {

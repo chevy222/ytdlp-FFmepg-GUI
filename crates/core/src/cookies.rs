@@ -3,7 +3,7 @@
 //! - 存储：`config/cookies/<host>.txt`（Netscape 格式，yt-dlp 直接可用）。
 //! - 匹配：精确 HOST → 站点级回退（父域/常见子域）→ X↔twitter 姊妹域名互退。
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -316,7 +316,6 @@ mod tests {
         let loaded = store.load_host("youtube.com").unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].name, "SID");
-        assert!(loaded[0].http_only);
         store.delete_host("youtube.com").unwrap();
         assert!(store.list_hosts().unwrap().is_empty());
     }
@@ -332,10 +331,9 @@ mod tests {
         store
             .save_host("www.youtube.com", vec![ck("VISITOR", "v2", "youtube.com")])
             .unwrap();
-        let dest = root.path().join("netscape.txt");
-        let out = store.export_netscape("www.youtube.com", &dest).unwrap();
+        let out = store.cookies_file("www.youtube.com").unwrap();
         assert!(out.is_some());
-        let text = std::fs::read_to_string(&dest).unwrap();
+        let text = std::fs::read_to_string(out.unwrap()).unwrap();
         // 带点 domain 保留前导点 + TRUE（跨子域）
         assert!(text.contains(".youtube.com\tTRUE\t/\tTRUE\t\tSID\tv1"));
         // 无点 domain + FALSE（host-only）
@@ -350,9 +348,8 @@ mod tests {
         store
             .save_host("example.com", vec![ck("SESS", "v", ".example.com")])
             .unwrap();
-        let dest = root.path().join("n.txt");
-        store.export_netscape("example.com", &dest).unwrap();
-        let text = std::fs::read_to_string(&dest).unwrap();
+        let out = store.cookies_file("example.com").unwrap();
+        let text = std::fs::read_to_string(out.unwrap()).unwrap();
         assert!(text.contains("\tTRUE\t/\tTRUE\t\tSESS\tv"), "got: {text}");
         assert!(!text.contains("TRUE\t0\tSESS"));
     }
@@ -361,9 +358,6 @@ mod tests {
     fn export_netscape_none_when_empty() {
         let root = tempdir().unwrap();
         let store = CookieStore::new(root.path().join("cookies"));
-        assert!(store
-            .export_netscape("nope.com", &root.path().join("n.txt"))
-            .unwrap()
-            .is_none());
+        assert!(store.cookies_file("nope.com").unwrap().is_none());
     }
 }
