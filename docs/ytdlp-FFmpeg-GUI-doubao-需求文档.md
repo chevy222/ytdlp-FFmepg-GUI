@@ -21,7 +21,7 @@
 | --- | --- | --- |
 | UL-01 | 解析中/已就绪/下载中/后处理中/转码中/合并中/已完成/失败/已取消/需要登录 的条目全部在同一列表展示，无分模块页面 | `ui/index.html`、`model.rs::Status` |
 | UL-02 | 条目一行：勾选框 · 名称（封面缩略图 + 旋转按钮 + 标题 + 副行"站点/本地 · URL 或路径"）· 画质/格式 · 状态 · 进度 · 操作 | `ui/index.html::rowHtml`、`model.rs::MediaItem::subline` |
-| UL-03 | 列表按 `updated_at` 倒序渲染；筛选分组把下载中/后处理/转码/合并归为"处理中" | `ui/index.html::render`、`model.rs::Status::group` |
+| UL-03 | 列表按 `updated_at` 倒序渲染（最新的在最上） | `ui/index.html::render`、`model.rs::MediaItem::new` |
 | UL-04 | 行内操作按状态出现：URL 已就绪 → 下载 / 剪辑 / 格式选择；Ready 或 Done 且有本地文件 → 转码；需要登录 → 去登录；处理中 → 取消；失败/已取消/需要登录 → 重试；已完成 → 打开目录；终态 → 删除；所有状态 → 日志 | `ui/index.html::ops` |
 | UL-05 | 勾选后出现批量操作栏：已选 N 项 · 顺/逆时针旋转（仅图标）· 批量转码 · 合并… · 删除；工具栏右侧垃圾桶清空列表 | `ui/index.html::renderBatch` |
 | UL-06 | 统一状态机（白名单迁移见 §9）+ 全局并发队列；进度实时回推；取消立即置标志并终止进程树；失败/已取消/需要登录可"重试"（即重新解析）；可删除 | `model.rs::transition`、`worker.rs::TaskQueue`、`commands.rs` |
