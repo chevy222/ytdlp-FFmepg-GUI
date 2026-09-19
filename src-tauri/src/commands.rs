@@ -847,12 +847,8 @@ fn finish_download(
             }
         }
     }
-    // 任务结束：只清理本任务私有临时目录与本次导出的 Cookie 临时文件
-    // （§3.7/UL-06；旧实现直接删全局 temp/，会连别的并发任务一起删）
-    cleanup_on_cancel(
-        &state.paths.task_temp_dir(id),
-        params.cookies_file.as_deref(),
-    );
+    // 任务结束：只清理本任务私有临时目录（cookie 文件持久存在 config/cookies/ 下，不删）
+    let _ = std::fs::remove_dir_all(&state.paths.task_temp_dir(id));
     // 清理取消标志注册表条目（否则随任务数无限累积；也让后续 cancel_item
     // 的 cancel_flag 查询能正确区分"运行中"与"已结束"）
     state.cancels.lock().unwrap().remove(id);
