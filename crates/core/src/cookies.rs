@@ -1,14 +1,13 @@
 //! 站点 Cookie 管理（§3.6 Cookie / §3.7 / DL-06）。
 //!
-//! - 存储：`config/cookies/<host>.json`（含 HttpOnly 等全字段，仅本地）。
+//! - 存储：`config/cookies/<host>.txt`（Netscape 格式，yt-dlp 直接可用）。
 //! - 匹配：精确 HOST → 站点级回退（父域/常见子域）→ X↔twitter 姊妹域名互退。
-//! - 导出：临时 Netscape cookies.txt 供 yt-dlp `--cookies` 使用。
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{paths::atomic_write_json, Result};
+use crate::Result;
 
 /// 单个 Cookie（WebView2 CookieManager 全字段，§3.7）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,7 +23,7 @@ pub struct CookieEntry {
     pub same_site: String,
 }
 
-/// 站点 Cookie 存储（按 HOST 分文件）。
+/// 站点 Cookie 存储（按 HOST 分文件，Netscape 格式）。
 #[derive(Debug, Clone)]
 pub struct CookieStore {
     dir: PathBuf,
@@ -39,22 +38,27 @@ impl CookieStore {
     }
 
     fn host_file(&self, host: &str) -> PathBuf {
-        self.dir.join(format!("{}.json", sanitize_host(host)))
+        self.dir.join(format!("{}.txt", sanitize_host(host)))
     }
 
-    /// 保存/覆盖某站点 cookie（原子写）。
+    /// 保存/覆盖某站点 cookie（Netscape 格式，原子写）。
     pub fn save_host(&self, host: &str, cookies: Vec<CookieEntry>) -> Result<()> {
         std::fs::create_dir_all(&self.dir)?;
-        atomic_write_json(&self.host_file(host), &cookies)
+        let f = self.host_file(host);
+        let tmp = f.with_extension("txt.tmp");
+        std::fs::write(&tmp, netscape_format(&cookies))?;
+        std::fs::rename(&tmp, &f)?;
+        Ok(())
     }
 
-    /// 读取某站点 cookie。
+    /// 读取某站点 cookie（Netscape 格式）。
     pub fn load_host(&self, host: &str) -> Result<Vec<CookieEntry>> {
         let f = self.host_file(host);
         if !f.exists() {
             return Ok(Vec::new());
         }
-        Ok(serde_json::from_str(&std::fs::read_to_string(f)?)?)
+        let s = std::fs::read_to_string(f)?;
+        Ok(netscape_parse(&s))
     }
 
     /// 已保存站点列表（按文件名排序，不含扩展名）。
@@ -66,7 +70,7 @@ impl CookieStore {
         for e in std::fs::read_dir(&self.dir)? {
             let e = e?;
             let name = e.file_name().to_string_lossy().into_owned();
-            if let Some(host) = name.strip_suffix(".json") {
+            if let Some(host) = name.strip_suffix(".txt") {
                 hosts.push(host.to_string());
             }
         }
@@ -83,9 +87,9 @@ impl CookieStore {
         Ok(())
     }
 
-    /// 导出匹配站点的 Netscape cookies.txt 到目标路径（供 yt-dlp）。
+    /// 获取匹配站点的 cookie 文件路径（供 yt-dlp --cookies）。
     /// 合并所有匹配候选的 cookie；无任何 cookie 返回 None。
-    pub fn export_netscape(&self, host: &str, dest: &Path) -> Result<Option<PathBuf>> {
+    pub fn cookies_file(&self, host: &str) -> Result<Option<PathBuf>> {
         let mut entries: Vec<CookieEntry> = Vec::new();
         for h in cookie_candidates(host) {
             if let Ok(list) = self.load_host(&h) {
@@ -102,39 +106,84 @@ impl CookieStore {
         if entries.is_empty() {
             return Ok(None);
         }
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut out = String::from("# Netscape HTTP Cookie File\n");
-        for c in entries {
-            if c.value.len() > MAX_COOKIE_VALUE_LEN {
-                continue;
-            }
-            // Netscape 行：domain(前缀点=跨子域) \t includeSubdomains \t path \t secure \t expires \t name \t value
-            // domain 必须保留原始前导点：剥掉点再标 TRUE 自相矛盾——
-            // 无点域是 host-only（www 不携带），且新版 CPython MozillaCookieJar 会
-            // 直接断言失败导致 yt-dlp 拒载整个文件。
-            let (domain, include_sub) = if c.domain.starts_with('.') {
-                (c.domain.as_str(), "TRUE")
-            } else {
-                (c.domain.as_str(), "FALSE")
-            };
-            let secure = if c.secure { "TRUE" } else { "FALSE" };
-            // 会话 cookie（无 expires）输出空字段：expires=0 在旧版 CPython
-            // MozillaCookieJar 里被当"1970 已过期"丢弃，空串才是"会话"语义的交集。
-            let expires = match c.expires {
-                Some(e) => format!("{}", e as i64),
-                None => String::new(),
-            };
-            let value = c.value.replace(['\t', '\n'], " ");
-            out.push_str(&format!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-                domain, include_sub, c.path, secure, expires, c.name, value
-            ));
-        }
-        std::fs::write(dest, out)?;
-        Ok(Some(dest.to_path_buf()))
+        // 用实际有 cookie 的 host 作为文件名
+        let actual_host = cookie_candidates(host)
+            .into_iter()
+            .find(|h| self.host_file(h).exists())
+            .unwrap_or_else(|| host.to_string());
+        let f = self.host_file(&actual_host);
+        std::fs::write(&f, netscape_format(&entries))?;
+        Ok(Some(f))
     }
+}
+
+/// 把 cookie 列表格式化成 Netscape 文本。
+fn netscape_format(cookies: &[CookieEntry]) -> String {
+    let mut out = String::from("# Netscape HTTP Cookie File\n");
+    for c in cookies {
+        if c.value.len() > MAX_COOKIE_VALUE_LEN {
+            continue;
+        }
+        let (domain, include_sub) = if c.domain.starts_with('.') {
+            (c.domain.as_str(), "TRUE")
+        } else {
+            (c.domain.as_str(), "FALSE")
+        };
+        let secure = if c.secure { "TRUE" } else { "FALSE" };
+        let expires = match c.expires {
+            Some(e) => format!("{}", e as i64),
+            None => String::new(),
+        };
+        let value = c.value.replace(['\t', '\n'], " ");
+        out.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            domain, include_sub, c.path, secure, expires, c.name, value
+        ));
+    }
+    out
+}
+
+/// 从 Netscape 文本解析 cookie 列表。
+fn netscape_parse(s: &str) -> Vec<CookieEntry> {
+    let mut out = Vec::new();
+    for line in s.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() < 7 {
+            continue;
+        }
+        let domain = parts[0].to_string();
+        let include_sub = parts[1] == "TRUE";
+        let path = parts[2].to_string();
+        let secure = parts[3] == "TRUE";
+        let expires = if parts[4].is_empty() {
+            None
+        } else {
+            parts[4].parse::<f64>().ok()
+        };
+        let name = parts[5].to_string();
+        let value = parts[6].to_string();
+        let http_only = false; // Netscape 格式不区分 HttpOnly
+        let same_site = String::new();
+        out.push(CookieEntry {
+            name,
+            value,
+            domain: if include_sub && !domain.starts_with('.') {
+                format!(".{}", domain)
+            } else {
+                domain
+            },
+            path,
+            expires,
+            http_only,
+            secure,
+            same_site,
+        });
+    }
+    out
 }
 
 /// 从 URL 中提取 HOST（小写，去端口）。

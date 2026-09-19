@@ -895,20 +895,7 @@ fn resolve_cookies(state: &AppState, item: &MediaItem) -> Option<PathBuf> {
             .and_then(ytdlp_core::cookies::host_from_url)
     })?;
     let store = CookieStore::new(state.paths.cookies_dir());
-    // 导出的 Netscape Cookie 直接落在 config/cookies/ 下（用户可见、可手动检查）
-    // 文件名用实际有 cookie 的 host（cookie_candidates 回退找到的），
-    // 避免 URL 提取的 www.youtube.com 和存储的 youtube.com 文件名对不上
-    let candidates = ytdlp_core::cookies::cookie_candidates(&host);
-    let actual_host = candidates
-        .iter()
-        .find(|h| state.paths.cookies_dir().join(format!("{}.json", ytdlp_core::cookies::sanitize_host(h))).exists())
-        .cloned()
-        .unwrap_or_else(|| host.clone());
-    let tmp = state
-        .paths
-        .cookies_dir()
-        .join(format!("{}.txt", actual_host));
-    store.export_netscape(&host, &tmp).ok().flatten()
+    store.cookies_file(&host).ok().flatten()
 }
 
 /// 释放并发 slot 并启动下一个等待任务（下载/转码/合并共用）。
