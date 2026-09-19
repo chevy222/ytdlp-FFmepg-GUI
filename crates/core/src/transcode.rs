@@ -723,9 +723,30 @@ fn run_transcode_once(
     let stdout = guard
         .stdout()
         .ok_or_else(|| CoreError::Io(std::io::Error::other("无法读取 ffmpeg 输出")))?;
-    let mut stderr = guard
+    let stderr = guard
         .stderr()
         .ok_or_else(|| CoreError::Io(std::io::Error::other("无法读取 ffmpeg 错误输出")))?;
+
+    // stderr 必须持续读取：管道缓冲区只有 64KB，ffmpeg 转码中往 stderr
+    // 输出 warning/info 时若无人读取会写满阻塞，导致 stdout 进度行不再产出。
+    let err_buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    {
+        let err_buf = err_buf.clone();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut reader = std::io::BufReader::new(stderr);
+            let mut chunk = Vec::new();
+            while reader.read_until(b'\n', &mut chunk).is_ok() {
+                if chunk.is_empty() {
+                    break;
+                }
+                if let Ok(mut s) = err_buf.lock() {
+                    s.push_str(&String::from_utf8_lossy(&chunk));
+                }
+                chunk.clear();
+            }
+        });
+    }
 
     let duration = meta.duration_secs.unwrap_or(0.0);
     if duration <= 0.0 {
@@ -762,7 +783,7 @@ fn run_transcode_once(
         return Err(CoreError::Cancelled);
     }
     if !status.success() {
-        let err = crate::exec::drain_stderr(&mut stderr);
+        let err = err_buf.lock().map(|s| s.clone()).unwrap_or_default();
         // 多行 stderr 拆成逐条日志：单条塞进一个 entry 时 UI 侧易被截断观感，
         // 逐行落日志才能完整回看 ffmpeg 的报错原因
         let mut lines = err.lines();
