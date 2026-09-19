@@ -484,10 +484,16 @@ pub fn run_download(
         }
     }
     if output_paths.is_empty() {
+        let err = crate::exec::drain_stderr(&mut stderr);
+        let hint = if err.trim().is_empty() {
+            "下载结束但未找到本次任务的产物文件（输出目录内既有文件未被改动）".to_string()
+        } else {
+            format!("下载结束但未找到产物文件。yt-dlp 输出：{}", err)
+        };
         return Err(CoreError::ProcessFailed {
             program: "yt-dlp".into(),
             code: None,
-            stderr: "下载结束但未找到本次任务的产物文件（输出目录内既有文件未被改动）".into(),
+            stderr: hint,
         });
     }
     // 本次没有产生新文件（只有"已下载过"的既有文件）→ 不做后处理，避免覆盖用户既有文件
