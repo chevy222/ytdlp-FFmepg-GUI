@@ -45,6 +45,57 @@ fn fetch_to(url: &str, dest: &Path, proxy: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+/// 抽取文件**内嵌封面**（attached_pic，元数据）——与桌面/播放器显示的封面同源，
+/// 不重新截帧。无封面流时返回 `Ok(false)`，由调用方回退抽帧。
+pub fn extract_cover(
+    resolver: &ToolResolver,
+    src: &Path,
+    dest: &Path,
+    cover_stream_index: Option<usize>,
+    on_log: &mut dyn FnMut(String),
+) -> Result<bool, String> {
+    let Some(idx) = cover_stream_index else {
+        return Ok(false);
+    };
+    ensure_parent(dest).map_err(|e| e.to_string())?;
+    let args: Vec<String> = [
+        "-y".to_string(),
+        "-i".to_string(),
+        src.to_string_lossy().into_owned(),
+        "-map".to_string(),
+        format!("0:{idx}"),
+        "-frames:v".to_string(),
+        "1".to_string(),
+        "-q:v".to_string(),
+        "2".to_string(),
+        dest.to_string_lossy().into_owned(),
+    ]
+    .to_vec();
+    on_log(crate::exec::display_command("ffmpeg", &args));
+    let mut cmd = resolver.command(Tool::Ffmpeg).map_err(|e| e.to_string())?;
+    cmd.args(&args);
+    let child = ChildGuard::spawn(&mut cmd).map_err(|e| e.to_string())?;
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    Ok(out.status.success() && dest.is_file())
+}
+
+/// 缩略图统一入口：**优先内嵌封面**（元数据），没有封面流才抽帧。
+///
+/// 直接抽帧会拿到转码后文件 0.5s 的一帧，与源文件封面/桌面缩略图不一致——
+/// 本地文件与转码/合并产物都走这里，保证列表缩略图与文件自带的封面同源。
+pub fn ensure_thumb(
+    resolver: &ToolResolver,
+    src: &Path,
+    dest: &Path,
+    cover_stream_index: Option<usize>,
+    on_log: &mut dyn FnMut(String),
+) -> Result<(), String> {
+    if extract_cover(resolver, src, dest, cover_stream_index, on_log)? {
+        return Ok(());
+    }
+    extract_thumb(resolver, src, dest, on_log)
+}
+
 /// 用 ffmpeg 从视频文件抽取一帧做封面（-ss 0.5 首帧附近，等比缩放 ≤360 宽）。
 /// `on_log`：实际执行的 ffmpeg 命令行回传（条目日志展示用）。
 pub fn extract_thumb(

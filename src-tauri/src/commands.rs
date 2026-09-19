@@ -485,6 +485,8 @@ fn run_probe(app: AppHandle, id: String) {
                 let cache_dir = state.paths.cache_dir();
                 let thumb_url = p.thumbnail_url.clone();
                 let local_path = item.path.clone();
+                // 本地文件优先取内嵌封面（元数据），与桌面缩略图同源
+                let cover_idx = p.meta.cover_stream_index;
                 let resolver2 = resolver.clone();
                 let proxy2 = network.proxy_url.clone();
                 tauri::async_runtime::spawn(async move {
@@ -498,10 +500,11 @@ fn run_probe(app: AppHandle, id: String) {
                             ytdlp_core::thumbs::save_remote_thumb(&u, &dest, Some(proxy2.as_str()))
                         }
                     } else if let Some(p) = local_path {
-                        ytdlp_core::thumbs::extract_thumb(
+                        ytdlp_core::thumbs::ensure_thumb(
                             &resolver2,
                             std::path::Path::new(&p),
                             &dest,
+                            cover_idx,
                             &mut |l| log_item(&app2, &id2, l),
                         )
                     } else {
@@ -799,9 +802,13 @@ fn finish_download(
     // 用最终产物抽帧补一张；已有封面（远程图）则保留，不做无谓抽帧
     if final_status == Status::Done {
         if let Some(out_path) = final_path {
-            let need_thumb = {
+            let (need_thumb, cover_idx) = {
                 let hist = state.history.lock().unwrap();
-                hist.get(id).and_then(|it| it.thumb.clone()).is_none()
+                match hist.get(id) {
+                    // 产物已有缩略图则不动；否则优先内嵌封面（元数据）
+                    Some(it) => (it.thumb.clone().is_none(), it.meta.cover_stream_index),
+                    None => (false, None),
+                }
             };
             if need_thumb {
                 let app2 = app.clone();
@@ -810,10 +817,11 @@ fn finish_download(
                 let resolver2 = state.resolver();
                 tauri::async_runtime::spawn(async move {
                     let dest = ytdlp_core::thumbs::thumb_path(&cache_dir, &id2);
-                    if ytdlp_core::thumbs::extract_thumb(
+                    if ytdlp_core::thumbs::ensure_thumb(
                         &resolver2,
                         std::path::Path::new(&out_path),
                         &dest,
+                        cover_idx,
                         &mut |l| log_item(&app2, &id2, l),
                     )
                     .is_ok()
@@ -1157,9 +1165,10 @@ fn finish_merge(
             let cache_dir = state.paths.cache_dir();
             let resolver2 = state.resolver();
             let out2 = out.clone();
+            let cover_idx = prod.meta.cover_stream_index;
             tauri::async_runtime::spawn(async move {
                 let dest = ytdlp_core::thumbs::thumb_path(&cache_dir, &pid);
-                if ytdlp_core::thumbs::extract_thumb(&resolver2, &out2, &dest, &mut |_| {}).is_ok()
+                if ytdlp_core::thumbs::ensure_thumb(&resolver2, &out2, &dest, cover_idx, &mut |_| {}).is_ok()
                 {
                     update_item(&app2, &pid, |it| {
                         it.thumb = Some(dest.to_string_lossy().into_owned());
@@ -1474,9 +1483,10 @@ fn finish_transcode(app: &AppHandle, id: &str, result: Result<std::path::PathBuf
             let cache_dir = state.paths.cache_dir();
             let resolver2 = state.resolver();
             let out2 = out.clone();
+            let cover_idx = prod.meta.cover_stream_index;
             tauri::async_runtime::spawn(async move {
                 let dest = ytdlp_core::thumbs::thumb_path(&cache_dir, &pid);
-                if ytdlp_core::thumbs::extract_thumb(&resolver2, &out2, &dest, &mut |_| {}).is_ok()
+                if ytdlp_core::thumbs::ensure_thumb(&resolver2, &out2, &dest, cover_idx, &mut |_| {}).is_ok()
                 {
                     update_item(&app2, &pid, |it| {
                         it.thumb = Some(dest.to_string_lossy().into_owned());
