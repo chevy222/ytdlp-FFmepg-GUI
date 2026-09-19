@@ -78,7 +78,12 @@ fn total_duration(metas: &[MediaMeta]) -> f64 {
 /// 输出路径（碰撞安全命名，同 TC-17；碰撞处理实现在 `paths::unique_output_path`，C2）。
 pub fn output_path(params: &MergeParams) -> Result<PathBuf> {
     let base = crate::transcode::sanitize_filename(&params.filename);
-    crate::paths::unique_output_path(&params.out_dir, &base, params.extension(), &params.collision_policy)
+    crate::paths::unique_output_path(
+        &params.out_dir,
+        &base,
+        params.extension(),
+        &params.collision_policy,
+    )
 }
 
 /// 编码器参数（与转码一致：auto = QSV → libx265 兜底；显式 nvenc/amf）。

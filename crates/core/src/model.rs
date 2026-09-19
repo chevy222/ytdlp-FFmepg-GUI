@@ -106,7 +106,6 @@ pub enum ItemKind {
     MergeOut,
 }
 
-
 /// 音频音量探测结果（volumedetect，供转码增益决策，§MD-02/MD-06/TC-07）。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AudioVolume {
@@ -257,8 +256,7 @@ impl MediaMeta {
             Some(h)
         }
     }
-
-    }
+}
 
 /// 人类可读大小（KB/MB/GB）。
 pub fn human_size(bytes: u64) -> String {
@@ -625,9 +623,6 @@ mod tests {
         assert!(transition(Status::Probing, Status::Done).is_err());
     }
 
-
-
-
     #[test]
     fn short_edge_respects_rotation() {
         // 竖屏源 1080x1920（rotate_tag=90）：短边 1080，而非 1920
@@ -645,7 +640,6 @@ mod tests {
         m.rotate_tag = Some(90);
         assert_eq!(m.short_edge(), Some(1920));
     }
-
 
     #[test]
     fn codec_label_prefix_match() {

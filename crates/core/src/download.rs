@@ -331,6 +331,7 @@ pub fn newest_media_since(dir: &Path, since: std::time::SystemTime) -> Option<Pa
 /// yt-dlp 正常收到终止信号时会自行清理 `.part`/`.ytdl`，但进程被
 /// `taskkill /T /F` 强杀时往往来不及，这里按同名前缀兜底扫一遍。
 fn cleanup_cancelled_outputs(
+    extracted: &[PathBuf],
     dests: &[PathBuf],
     merged: &[PathBuf],
     started: std::time::SystemTime,
@@ -458,7 +459,8 @@ pub fn run_download(
             code: status.code(),
             stderr: err,
         });
-    }
+    }
+
     // 产物收敛：
     // 1) ExtractAudio（仅音频最终产物）→ 合并产物行（DASH 下载的最终文件只出现在
     //    这里）→ Destination（未合并的单流/中间流）→ "已下载过"行；
@@ -735,8 +737,21 @@ pub fn is_media_file(p: &Path) -> bool {
             .map(|e| e.to_lowercase())
             .as_deref(),
         Some(
-            "mp4" | "mkv" | "mov" | "webm" | "avi" | "flv" | "ts" | "m4v"
-                | "mp3" | "m4a" | "aac" | "flac" | "opus" | "wav" | "ogg"
+            "mp4"
+                | "mkv"
+                | "mov"
+                | "webm"
+                | "avi"
+                | "flv"
+                | "ts"
+                | "m4v"
+                | "mp3"
+                | "m4a"
+                | "aac"
+                | "flac"
+                | "opus"
+                | "wav"
+                | "ogg"
         )
     )
 }
@@ -978,12 +993,13 @@ mod tests {
 
     #[test]
     fn parse_extract_audio_destination() {
-        let p = parse_extract_audio_path(
-            "[ExtractAudio] Destination: D:/videos/测试音频.mp3",
-        )
-        .unwrap();
+        let p =
+            parse_extract_audio_path("[ExtractAudio] Destination: D:/videos/测试音频.mp3").unwrap();
         assert_eq!(p, PathBuf::from("D:/videos/测试音频.mp3"));
-        assert_eq!(parse_extract_audio_path("[ExtractAudio] Destination: "), None);
+        assert_eq!(
+            parse_extract_audio_path("[ExtractAudio] Destination: "),
+            None
+        );
         assert_eq!(parse_extract_audio_path("[download] 1.0% of 1MiB"), None);
     }
 }

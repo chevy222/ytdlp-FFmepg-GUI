@@ -8,7 +8,7 @@
 //! 进度：`ffmpeg -progress pipe:1 -nostats`，按 `out_time_us` 相对探测时长换算百分比。
 
 use std::io::BufRead;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -55,7 +55,12 @@ impl TranscodeParams {
     /// 碰撞处理实现在 `paths::unique_output_path`，与合并共用，C2）。
     pub fn output_path(&self) -> Result<PathBuf> {
         let base = apply_filename_template(&self.filename_template, &self.title);
-        crate::paths::unique_output_path(&self.out_dir, &base, self.extension(), &self.collision_policy)
+        crate::paths::unique_output_path(
+            &self.out_dir,
+            &base,
+            self.extension(),
+            &self.collision_policy,
+        )
     }
 }
 
@@ -458,12 +463,14 @@ pub fn build_args_for_tier(
             args.push(format!("{main_label}?"));
             args.push("-map".into());
             args.push("0:a?".into());
-            if rotated && cover_idx.is_some() {
-                // 封面从第二软件输入取，CPU 滤镜旋转
-                args.push("-map".into());
-                args.push(format!("1:{}?", cover_idx.unwrap()));
-                args.push("-filter:v:1".into());
-                args.push(cpu_vf_for_cover());
+            if rotated {
+                if let Some(ci) = cover_idx {
+                    // 封面从第二软件输入取，CPU 滤镜旋转
+                    args.push("-map".into());
+                    args.push(format!("1:{ci}?"));
+                    args.push("-filter:v:1".into());
+                    args.push(cpu_vf_for_cover());
+                }
             } else if let Some(ci) = cover_idx {
                 args.push("-map".into());
                 args.push(format!("0:{ci}?"));
@@ -478,11 +485,13 @@ pub fn build_args_for_tier(
             args.push(format!("{main_label}?"));
             args.push("-map".into());
             args.push("0:a?".into());
-            if rotated && cover_idx.is_some() {
-                args.push("-map".into());
-                args.push(format!("1:{}?", cover_idx.unwrap()));
-                args.push("-filter:v:1".into());
-                args.push(cpu_vf_for_cover());
+            if rotated {
+                if let Some(ci) = cover_idx {
+                    args.push("-map".into());
+                    args.push(format!("1:{ci}?"));
+                    args.push("-filter:v:1".into());
+                    args.push(cpu_vf_for_cover());
+                }
             } else if let Some(ci) = cover_idx {
                 args.push("-map".into());
                 args.push(format!("0:{ci}?"));
@@ -503,12 +512,10 @@ pub fn build_args_for_tier(
         // maxrate = 1.2×、bufsize = 2×（bat 同款）
         let src = meta
             .vbitrate_kbps
-            .or_else(|| {
-                if params.br_default_kbps > 0 {
-                    Some(params.br_default_kbps)
-                } else {
-                    None
-                }
+            .or(if params.br_default_kbps > 0 {
+                Some(params.br_default_kbps)
+            } else {
+                None
             })
             .map(|src| match params.brcap_kbps.filter(|c| *c > 0) {
                 Some(cap) => src.min(cap),
@@ -628,15 +635,16 @@ pub fn run_transcode(
     mut on_progress: impl FnMut(f32),
     mut on_log: impl FnMut(String),
 ) -> Result<PathBuf> {
-    let explicit = matches!(
-        params.encoder_mode.as_str(),
-        "libx265" | "nvenc" | "amf"
-    );
+    let explicit = matches!(params.encoder_mode.as_str(), "libx265" | "nvenc" | "amf");
     let auto_qsv = !explicit && qsv_available(resolver).unwrap_or(false);
     let tiers: &[TranscodeTier] = if explicit || !auto_qsv {
         &[TranscodeTier::Software]
     } else {
-        &[TranscodeTier::GpuQsv, TranscodeTier::HybridQsv, TranscodeTier::Software]
+        &[
+            TranscodeTier::GpuQsv,
+            TranscodeTier::HybridQsv,
+            TranscodeTier::Software,
+        ]
     };
     for (i, tier) in tiers.iter().enumerate() {
         let r = run_transcode_once(
@@ -653,10 +661,7 @@ pub fn run_transcode(
             Err(CoreError::Cancelled) => return Err(CoreError::Cancelled),
             Err(e) => {
                 if i + 1 < tiers.len() {
-                    on_log(format!(
-                        "{} 失败（{e}），自动回落下一层级…",
-                        tier.label()
-                    ));
+                    on_log(format!("{} 失败（{e}），自动回落下一层级…", tier.label()));
                 } else {
                     return Err(e);
                 }
@@ -779,7 +784,6 @@ fn read_stderr(mut stderr: std::process::ChildStderr) -> String {
         t
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1020,7 +1024,11 @@ mod tests {
         )
         .unwrap();
         let j = args.join(" ");
-        assert!(j.contains("-hwaccel qsv -hwaccel_output_format qsv"), "{}", j);
+        assert!(
+            j.contains("-hwaccel qsv -hwaccel_output_format qsv"),
+            "{}",
+            j
+        );
         assert!(j.contains("-filter:v:0 vpp_qsv=transpose=clock"), "{}", j);
         assert!(j.contains("hevc_qsv"), "{}", j);
         assert!(j.contains("-display_rotation 0"), "{}", j);

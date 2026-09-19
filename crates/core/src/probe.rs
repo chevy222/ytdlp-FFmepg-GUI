@@ -15,7 +15,6 @@ use crate::exec::{decode_text, ChildGuard, Tool, ToolResolver};
 use crate::model::{AudioVolume, DownloadFormat, MediaMeta};
 use crate::Result;
 
-
 /// 解析失败分类（MD-05）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeErrorKind {
