@@ -758,7 +758,7 @@ fn finish_download(
             Status::Canceled
         }
         Err(e) => {
-            log_error_lines(app, id, "下载失败：", &e);
+            log_error_lines(app, id, "下载失败：", e);
             Status::Failed
         }
     };
@@ -1099,7 +1099,7 @@ fn finish_merge(
             Status::Canceled
         }
         Err(e) => {
-            log_error_lines(app, id, "合并失败：", &e);
+            log_error_lines(app, id, "合并失败：", e);
             Status::Failed
         }
     };
@@ -1396,7 +1396,7 @@ fn finish_transcode(app: &AppHandle, id: &str, result: Result<std::path::PathBuf
             (restore_status(app, id), Status::Canceled)
         }
         Err(e) => {
-            log_error_lines(app, id, "转码失败：", &e);
+            log_error_lines(app, id, "转码失败：", e);
             (restore_status(app, id), Status::Failed)
         }
     };
