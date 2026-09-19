@@ -475,7 +475,10 @@ fn run_probe(app: AppHandle, id: String) {
                 it.error = None;
                 it.push_log("解析完成，已就绪".to_string());
                 if url_src {
-                    it.push_log(format!("可用格式：{} 项", it.meta.download_formats.len()));
+                    let heights: Vec<String> = it.meta.download_formats.iter()
+                        .map(|f| format!("{}", f.height.unwrap_or(0)))
+                        .collect();
+                    it.push_log(format!("可用格式：{} 项（高度：{}）", it.meta.download_formats.len(), heights.join(", ")));
                 }
             });
             // 封面缩略图（异步生成，不阻塞就绪）
