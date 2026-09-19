@@ -1014,7 +1014,10 @@ function loadCookieList(){
 function bindSetEvents(){
   const page=document.getElementById('setPage');
   page.querySelectorAll('[data-cfg]').forEach(el=>{
-    el.addEventListener('change',()=>{
+    // text/number 用 input（实时写回，避免填完直接点保存没失焦丢值）；
+    // checkbox/select 用 change（勾选/选中即触发）
+    const evt=(el.type==='checkbox'||el.tagName==='SELECT')?'change':'input';
+    el.addEventListener(evt,()=>{
       const path=el.dataset.cfg;
       let val;
       if(el.type==='checkbox')val=el.checked;
