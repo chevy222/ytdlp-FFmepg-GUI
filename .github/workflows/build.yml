@@ -7,16 +7,23 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # 跳过仓库的 rust-toolchain.toml：它额外声明了 x86_64-unknown-linux-gnu target
+  # （供 Linux 上跑核心层单测），Windows runner 上会被 rustup 白白下载一份 rust-std。
+  # 本 workflow 只产出 Windows 产物，工具链与 components 已由 dtolnay/rust-toolchain 装好。
+  RUSTUP_TOOLCHAIN: stable
 
 jobs:
-  build:
-    name: Windows 构建（单测 + Clippy + Release）
+  # 门禁与构建拆成两个 job：cargo test 产出 .rlib、cargo clippy 需要 .rmeta，两者指纹
+  # 不同，放在同一个 job 里顺序执行会把整棵依赖树重新 check 一遍。拆开后每个 job 只
+  # 固定用一种 profile，rust-cache 命中率才稳定（缓存 key 按 job 区分，互不影响）。
+  lint:
+    name: 质量门禁（单测 + Clippy + 依赖审计）
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
 
-      - name: 安装 Rust 工具链（stable + Windows target）
+      - name: 安装 Rust 工具链（stable + rustfmt + clippy）
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -26,17 +33,38 @@ jobs:
       - name: 核心层单元测试
         run: cargo test -p ytdlp-core
 
-      - name: Clippy 质量门禁（-D warnings）
+      - name: Clippy 质量门禁（核心层，-D warnings）
         run: cargo clippy -p ytdlp-core --all-targets -- -D warnings
 
       - name: Clippy 质量门禁（GUI crate，-D warnings）
         run: cargo clippy -p ytdlp-gui --all-targets -- -D warnings
 
-      - name: 依赖审计（信息性；发现公告不阻塞构建）
+      - name: 安装 cargo-audit（预编译二进制；不再每次从源码编译）
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
         continue-on-error: true
-        run: |
-          cargo install cargo-audit --locked --quiet
-          cargo audit
+
+      - name: 依赖审计（信息性；未安装或发现公告都不阻塞）
+        continue-on-error: true
+        run: cargo audit
+
+  build:
+    name: Windows Release 构建（单 EXE）
+    needs: lint
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      # 只构建，不需要 rustfmt / clippy 组件。targets 显式写出 Windows 目标，
+      # 不依赖 dtolnay/rust-toolchain 的 host-target 默认行为——打包单 EXE 靠它。
+      - name: 安装 Rust 工具链（stable + Windows x86_64-msvc 目标）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2.9.2
 
       # 图标是编译期嵌进 exe 的 Windows 资源。cargo 按 build script 声明的
       # rerun-if-changed 判断是否重跑，而 tauri-build 不声明图标；rust-cache 恢复

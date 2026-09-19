@@ -42,12 +42,12 @@ tools/      yt-dlp / ffmpeg / ffprobe / deno（托管模式工具链）· instal
 **Windows 本地**（PowerShell 7）：
 
 ```powershell
-pwsh ./scripts/build.ps1        # 核心层单测 → Clippy → （可选）依赖审计 → release 构建
+pwsh ./scripts/build.ps1        # 核心层单测 → Clippy（核心层 + GUI crate）→ （可选）依赖审计 → release 构建
 ```
 
 产物：`target/release/ytdlp-FFmpeg-GUI.exe`（workspace 根即仓库根，单 EXE）。
 
-**CI**：push/PR 在 **Windows runner** 上跑 核心层单测 → Clippy（核心层与 GUI crate，均 `-D warnings`）→ `cargo audit`（信息性，不阻塞）→ release 构建并校验单 EXE；push `v*` tag 时额外打包 zip 并创建 GitHub Release 草稿。
+**CI**：push/PR 在 **Windows runner** 上跑两个 job——`lint`（核心层单测 → Clippy 核心层与 GUI crate，均 `-D warnings` → `cargo audit` 信息性不阻塞）通过后才进 `build`（release 构建、校验单 EXE、上传 artifact）；push `v*` tag 时走同一套门禁，额外打包 zip 并创建 GitHub Release 草稿。
 
 **Linux 环境交叉编译 Windows 单 EXE**（cargo-xwin / zig，本地备用通道）：详见 `scripts/cross-build/README.md`。
 

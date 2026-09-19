@@ -6,8 +6,14 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # 同 build.yml：跳过仓库的 rust-toolchain.toml，避免在 Windows runner 上
+  # 白白下载一份 x86_64-unknown-linux-gnu 的 rust-std（那个 target 是给
+  # Linux 上跑核心层单测用的，本 workflow 只产出 Windows 产物）。
+  RUSTUP_TOOLCHAIN: stable
 
 jobs:
+  # 与 build.yml 的 lint + build 保持同一套门禁（两个 crate 的 Clippy 都要跑），
+  # 只是不拆 job：打 tag 发版频率低，拆开反而多一次冷启动，不划算。
   release:
     name: Windows Release（单 EXE + zip）
     runs-on: windows-latest
@@ -17,18 +23,34 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: 安装 Rust 工具链（stable + Windows target）
+      # targets 显式写出 Windows 目标，不依赖 dtolnay/rust-toolchain 的
+      # host-target 默认行为——本 job 要打包 Windows 单 EXE。
+      - name: 安装 Rust 工具链（stable + rustfmt + clippy + Windows x86_64-msvc 目标）
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@v2.9.2
 
       - name: 核心层单元测试
         run: cargo test -p ytdlp-core
 
-      - name: Clippy 质量门禁（-D warnings）
+      - name: Clippy 质量门禁（核心层，-D warnings）
         run: cargo clippy -p ytdlp-core --all-targets -- -D warnings
+
+      - name: Clippy 质量门禁（GUI crate，-D warnings）
+        run: cargo clippy -p ytdlp-gui --all-targets -- -D warnings
+
+      - name: 安装 cargo-audit（预编译二进制；不再每次从源码编译）
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+        continue-on-error: true
+
+      - name: 依赖审计（信息性；未安装或发现公告都不阻塞）
+        continue-on-error: true
+        run: cargo audit
 
       # 同 build.yml：tauri-build 不为图标声明 rerun-if-changed，rust-cache 恢复的
       # 旧 Windows 资源会被复用，导致 exe 图标停留在旧版本。构建前清理 GUI crate。

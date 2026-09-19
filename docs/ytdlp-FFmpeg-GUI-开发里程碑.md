@@ -41,9 +41,12 @@ pwsh ./scripts/build.ps1
 
 1. `cargo test -p ytdlp-core` —— 失败即中断；
 2. `cargo clippy -p ytdlp-core --all-targets -- -D warnings` —— 失败即中断；
-3. `cargo audit` —— 未安装或发现公告只告警，不中断；
-4. `cargo build --release`；
-5. 校验 `target\release\ytdlp-FFmpeg-GUI.exe` 存在并输出体积。
+3. `cargo clippy -p ytdlp-gui --all-targets -- -D warnings` —— 失败即中断；
+4. `cargo audit` —— 未安装或发现公告只告警，不中断；
+5. `cargo build --release`；
+6. 校验 `target\release\ytdlp-FFmpeg-GUI.exe` 存在并输出体积。
+
+门禁集合与 `.github/workflows/build.yml` 的 `lint` job 逐条一致——两个 crate 的 Clippy 都要跑，否则 GUI crate 的 lint 只有推上去才暴露。本地**不**跑 `cargo clean -p ytdlp-gui`：那一步是 CI 上为绕开 rust-cache 复用旧图标资源而设的，本地 `target/` 是持久目录、mtime 监听照常生效，且 `build.rs` 已声明图标的 `rerun-if-changed`。
 
 产物：`target/release/ytdlp-FFmpeg-GUI.exe`（workspace 根即仓库根，target 在仓库根下）。单 EXE 绿色便携：前端资源在编译期嵌入，运行时目录（`config/`、`temp/`、`tools/`）在 exe 同级自动创建，不写注册表、不依赖安装包。
 
@@ -55,20 +58,29 @@ pwsh ./scripts/build.ps1
 
 ## 3. CI（GitHub Actions，windows-latest）
 
-`.github/workflows/build.yml`（push main / PR）：
+`.github/workflows/build.yml`（push main / PR）拆成两个 job，后者 `needs` 前者：
 
 ```
-checkout → 安装 rust stable(+rustfmt,clippy) → 缓存
-→ cargo test -p ytdlp-core
-→ cargo clippy -p ytdlp-core --all-targets -- -D warnings
-→ cargo clippy -p ytdlp-gui  --all-targets -- -D warnings
-→ cargo install cargo-audit --locked && cargo audit      # continue-on-error：信息性，不阻塞
-→ cargo build --release
-→ 校验 target\release\ytdlp-FFmpeg-GUI.exe 存在
-→ 上传 artifact ytdlp-FFmpeg-GUI-win64
+lint（质量门禁，timeout 40min）
+  checkout → 安装 rust stable(+rustfmt,clippy) → 缓存
+  → cargo test -p ytdlp-core
+  → cargo clippy -p ytdlp-core --all-targets -- -D warnings
+  → cargo clippy -p ytdlp-gui  --all-targets -- -D warnings
+  → 安装 cargo-audit（预编译二进制）→ cargo audit   # 两步均 continue-on-error：信息性，不阻塞
+
+build（Windows Release，needs: lint，timeout 60min）
+  checkout → 安装 rust stable(+Windows target) → 缓存
+  → cargo clean -p ytdlp-gui（绕开 rust-cache 复用的旧 Windows 图标资源）
+  → cargo build --release
+  → 校验 target\release\ytdlp-FFmpeg-GUI.exe 存在
+  → 上传 artifact ytdlp-FFmpeg-GUI-win64
 ```
 
-`.github/workflows/release.yml`（push tag `v*`）：同样的门禁步骤，随后把单 EXE 压成 `ytdlp-FFmpeg-GUI-<tag>-win64.zip`，用 `softprops/action-gh-release` 创建**草稿** Release（`permissions: contents: write`）。
+拆开的原因：`cargo test` 产出 `.rlib`、`cargo clippy` 需要 `.rmeta`，两者指纹不同，放在同一 job 里顺序执行会把整棵依赖树重新 check 一遍。拆成两个 job 后各自固定一种 profile，rust-cache 的命中率才稳定（缓存 key 按 job 区分）。
+
+两个 workflow 的 `env` 都设 `RUSTUP_TOOLCHAIN: stable`，跳过仓库的 `rust-toolchain.toml`——它额外声明了 `x86_64-unknown-linux-gnu` target（供 Linux 上跑核心层单测），在 Windows runner 上会被 rustup 白白下载一份 rust-std。
+
+`.github/workflows/release.yml`（push tag `v*`）：同一套门禁（核心层与 GUI crate 的 Clippy 都跑），但**不**拆 job——发版频率低，拆开反而多一次冷启动。随后把单 EXE 压成 `ytdlp-FFmpeg-GUI-<tag>-win64.zip`，用 `softprops/action-gh-release` 创建**草稿** Release（`permissions: contents: write`）。
 
 ## 4. 质量基线
 
