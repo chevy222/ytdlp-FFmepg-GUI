@@ -1070,8 +1070,11 @@ function bindSetEvents(){
   }));
   const addSite=document.getElementById('btnSiteAdd');
   if(addSite)addSite.addEventListener('click',()=>{
-    const h=prompt('输入站点（如 bilibili.com）'); if(!h)return;
-    const map=cfgRef().network.site_proxy||{}; map[h]=false; cfgRef().network.site_proxy=map; renderSetPage();
+    let h=prompt('输入站点（如 bilibili.com）'); if(!h)return;
+    // 自动从完整 URL 提取 host（去掉 scheme、www、路径）
+    h=h.trim().replace(/^https?:\/\//i,'').replace(/^www\./,'').replace(/[\/?#].*$/,'').trim();
+    if(!h)return;
+    const map=cfgRef().network.site_proxy||{}; map[h]=true; cfgRef().network.site_proxy=map; renderSetPage();
   });
   const refresh=page.querySelector('[data-act="refresh-cookie"]');
   if(refresh)refresh.addEventListener('click',loadCookieList);
