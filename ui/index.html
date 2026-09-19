@@ -70,6 +70,11 @@
   .roticon{width:30px;height:30px;border:none;background:var(--parchment);border-radius:var(--r-sm);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;color:var(--ink-2);padding:0;transition:background .15s}
   .roticon:hover{background:#ebebef}
   .roticon svg{display:block}
+  /* 常用代理端口快捷标签 */
+  .proto-tags{display:flex;gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap}
+  .proto-tags .proto-hint{font-size:12px;color:var(--ink-48)}
+  .proto-tag{border:1px solid var(--line);background:var(--pearl);border-radius:999px;padding:4px 12px;font-size:12px;font-family:inherit;color:var(--ink-2);cursor:pointer;transition:background .15s,border-color .15s,color .15s}
+  .proto-tag:hover{background:var(--pri-tint);border-color:var(--pri);color:var(--pri)}
   /* ===== 列表（白卡 + hairline 行分界）===== */
   .table-wrap{flex:1;overflow:auto;min-height:0;padding:0 24px 20px}
   .table-wrap.has-list{background:var(--canvas);border:1px solid var(--line);border-radius:var(--r-lg);margin:12px 24px 16px;padding:0}
@@ -926,7 +931,12 @@ function renderSetPage(){
     h+=toolRow('deno_path','deno 路径');
     h+=row('PO-Token 服务',chk('dependencies.potoken_enabled',dp.potoken_enabled,'启用'),'PO-Token（POT）是 YouTube 风控验证令牌（Proof-of-Origin Token），由 deno 运行 potoken 生成器产出，用于通过 YouTube 机器人验证、降低 403/风控拦截概率。默认启用。');
   } else if(curPage==='network'){
-    h+=row('代理地址',txt('network.proxy_url',n.proxy_url,'socks5://127.0.0.1:10808'),'常用代理端口：Clash 7890 / V2RayN 10808 / SS 1080；仅对站点分流中勾选的站点生效');
+    h+=row('代理地址',txt('network.proxy_url',n.proxy_url,'socks5://127.0.0.1:10808')+
+      '<div class="proto-tags"><span class="proto-hint">常用：</span>'+
+      '<button class="proto-tag" data-proxy-fill="http://127.0.0.1:7890" title="Clash 混合端口（HTTP/SOCKS5 通用）">Clash · 7890</button>'+
+      '<button class="proto-tag" data-proxy-fill="socks5://127.0.0.1:10808" title="V2RayN 默认 SOCKS 端口">V2RayN · 10808</button>'+
+      '<button class="proto-tag" data-proxy-fill="socks5://127.0.0.1:1080" title="Shadowsocks 默认 SOCKS 端口">SS · 1080</button>'+
+      '</div>','仅对站点分流中勾选的站点生效；留空 = 全部直连（yt-dlp 可能被系统代理接管）');
     const smap=n.site_proxy||{};
     h+='<div class="set-hd">站点分流（勾选 = 走代理，其余直连）</div><div class="set-row"><div class="v grow">'+
       '<div class="'+(Object.keys(smap).length?'site-list':'site-empty')+'" id="siteList">'+renderSiteList(smap)+'</div>'+
@@ -1002,6 +1012,14 @@ function bindSetEvents(){
       setCfg(path,val);
     });
   });
+  // 常用代理端口快捷标签：填入输入框并同步进配置（点保存按钮统一落盘）
+  page.querySelectorAll('[data-proxy-fill]').forEach(b=>b.addEventListener('click',()=>{
+    const inp=page.querySelector('input[data-cfg="network.proxy_url"]');
+    if(!inp)return;
+    inp.value=b.dataset.proxyFill;
+    setCfg('network.proxy_url',inp.value);
+    toast('已填入 '+b.textContent.trim()+'，点"保存"生效');
+  }));
   page.querySelectorAll('[data-del-site]').forEach(b=>b.addEventListener('click',()=>{
     delete cfgRef().network.site_proxy[b.dataset.delSite]; renderSetPage();
   }));
