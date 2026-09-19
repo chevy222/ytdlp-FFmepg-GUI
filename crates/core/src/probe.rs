@@ -461,6 +461,21 @@ pub fn parse_ffprobe_json(text: &str) -> MediaMeta {
                             meta.rotate_tag = r.parse::<i32>().ok();
                         }
                     }
+                    // 新版 ffprobe 用 side_data_list.Display Matrix.rotation 代替 tags.rotate
+                    if meta.rotate_tag.is_none() {
+                        if let Some(sd) = s["side_data_list"].as_array() {
+                            for item in sd {
+                                if let Some(r) = item["rotation"].as_f64() {
+                                    // rotation 是弧度（如 -1.570796），转成角度
+                                    let deg = (r * 180.0 / std::f64::consts::PI).round() as i32;
+                                    if deg != 0 {
+                                        meta.rotate_tag = Some(deg.rem_euclid(360));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
             Some("audio") => {
