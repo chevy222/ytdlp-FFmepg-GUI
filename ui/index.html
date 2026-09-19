@@ -433,14 +433,16 @@ const ST_LABEL = { Probing:'解析中', Ready:'已就绪', Downloading:'下载�
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 // 画质/格式列：12 项源元数据（容器·分辨率·编码·视频码率·帧率·音频编码·采样率·音频码率·音轨数·最大音量·时长·大小）
-// 与核心层 MediaMeta::quality_line 保持同一口径
-function resLabel(h){ return h>=2160?'4K':(h>=1440?'2K':h+'P'); }
+// 画质列由前端渲染（P1-6 定案：后端不产出）。
+// 分辨率按**短边**口径（P0-2 依赖）：竖屏源（rotate_tag 90/270 且有 width）取 min(width,height)
+function shortEdge(m){ if(!m.height)return null; const rot=[90,-90,270,-270].includes(m.rotate_tag); return rot&&m.width?Math.min(m.width,m.height):m.height; }
+function resLabel(h){ return h==null?null:(h>=2160?'4K':(h>=1440?'2K':h+'P')); }
 function srLabel(hz){ if(hz<1000)return hz+'Hz'; const k=hz/1000; return (Math.abs(k-Math.round(k))<0.05?String(Math.round(k)):k.toFixed(1))+'kHz'; }
 function qualityLine(m){
   if(!m)return '';
   const p=[];
   if(m.container)p.push(m.container);
-  if(m.height)p.push(resLabel(m.height));
+  const se=shortEdge(m); if(se!=null)p.push(resLabel(se));
   if(m.vcodec)p.push(m.vcodec);
   if(m.vbitrate_kbps)p.push(m.vbitrate_kbps>=1000?(m.vbitrate_kbps/1000).toFixed(1)+'Mbps':m.vbitrate_kbps+'k');
   if(m.fps)p.push(Math.round(m.fps)+'fps');

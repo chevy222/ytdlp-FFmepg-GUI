@@ -258,81 +258,7 @@ impl MediaMeta {
         }
     }
 
-    /// 画质/格式列渲染（12 项字段，自动换行；需求文档 §6.2）。
-    ///
-    /// 字段全集：容器 · 分辨率 · 编码器 · 视频码率 · 帧率 · 音频编码 ·
-    /// 音频采样率 · 音频码率 · 音轨数 · 最大音量 · 时长 · 大小
-    /// （与 `ui/index.html::qualityLine` 保持同一口径）。
-    pub fn quality_line(&self) -> String {
-        let mut parts = Vec::new();
-        if let Some(c) = &self.container {
-            parts.push(c.clone());
-        }
-        if let Some(h) = self.short_edge() {
-            parts.push(resolution_label(h));
-        }
-        if let Some(c) = &self.vcodec {
-            parts.push(c.clone());
-        }
-        if let Some(b) = self.vbitrate_kbps {
-            // 低码率四舍五入会显示 0Mbps，低于 1Mbps 时用 kbps 口径
-            if b >= 1000 {
-                parts.push(format!("{}Mbps", (b + 500) / 1000));
-            } else {
-                parts.push(format!("{}k", b));
-            }
-        }
-        if let Some(f) = self.fps {
-            parts.push(format!("{:.0}fps", f));
-        }
-        if let Some(c) = &self.acodec {
-            parts.push(c.clone());
-        }
-        if let Some(sr) = self.sample_rate {
-            parts.push(sample_rate_label(sr));
-        }
-        if let Some(b) = self.abitrate_kbps {
-            parts.push(format!("{}k", b));
-        }
-        if let Some(c) = self.audio_channels {
-            parts.push(format!("{}声道", c));
-        }
-        if let Some(v) = self.audio_volume.max_volume_db {
-            parts.push(format!("{:.1}dB", v));
-        }
-        if let Some(d) = self.duration_secs {
-            let m = (d / 60.0) as u64;
-            let s = (d as u64) % 60;
-            parts.push(format!("{:02}:{:02}", m, s));
-        }
-        if let Some(b) = self.size_bytes {
-            parts.push(human_size(b));
-        }
-        parts.join(" · ")
     }
-}
-
-/// 分辨率标签：2160 及以上 → `4K`，1440–2159 → `2K`，其余 `{短边}P`（§6.2 原型）。
-pub fn resolution_label(height: u32) -> String {
-    match height {
-        2160.. => "4K".to_string(),
-        1440..=2159 => "2K".to_string(),
-        _ => format!("{}P", height),
-    }
-}
-
-/// 采样率标签：48000 → `48kHz`，44100 → `44.1kHz`，否则 `{hz}Hz`。
-pub fn sample_rate_label(hz: u32) -> String {
-    if hz < 1000 {
-        return format!("{}Hz", hz);
-    }
-    let khz = f64::from(hz) / 1000.0;
-    if khz.fract().abs() < 0.05 {
-        format!("{:.0}kHz", khz)
-    } else {
-        format!("{:.1}kHz", khz)
-    }
-}
 
 /// 人类可读大小（KB/MB/GB）。
 pub fn human_size(bytes: u64) -> String {
@@ -699,50 +625,8 @@ mod tests {
         assert!(transition(Status::Probing, Status::Done).is_err());
     }
 
-    #[test]
-    fn quality_line_renders_12_fields() {
-        let meta = MediaMeta {
-            container: Some("MP4".into()),
-            height: Some(2160),
-            vcodec: Some("HEVC".into()),
-            vbitrate_kbps: Some(12000),
-            fps: Some(60.0),
-            acodec: Some("AAC".into()),
-            sample_rate: Some(48000),
-            abitrate_kbps: Some(320),
-            audio_channels: Some(2),
-            audio_volume: AudioVolume {
-                max_volume_db: Some(-8.2),
-                ..Default::default()
-            },
-            duration_secs: Some(332.0),
-            size_bytes: Some(35_651_584),
-            ..Default::default()
-        };
-        let line = meta.quality_line();
-        assert_eq!(
-            line,
-            "MP4 · 4K · HEVC · 12Mbps · 60fps · AAC · 48kHz · 320k · 2声道 · -8.2dB · 05:32 · 34.0MB"
-        );
-    }
 
-    #[test]
-    fn resolution_and_sample_rate_labels() {
-        assert_eq!(resolution_label(2160), "4K");
-        assert_eq!(resolution_label(4320), "4K");
-        assert_eq!(resolution_label(1440), "2K");
-        assert_eq!(resolution_label(1080), "1080P");
-        assert_eq!(resolution_label(720), "720P");
-        assert_eq!(sample_rate_label(48000), "48kHz");
-        assert_eq!(sample_rate_label(44100), "44.1kHz");
-        assert_eq!(sample_rate_label(8000), "8kHz");
-        assert_eq!(sample_rate_label(800), "800Hz");
-    }
 
-    #[test]
-    fn quality_line_empty_meta() {
-        assert_eq!(MediaMeta::default().quality_line(), "");
-    }
 
     #[test]
     fn short_edge_respects_rotation() {
@@ -762,19 +646,6 @@ mod tests {
         assert_eq!(m.short_edge(), Some(1920));
     }
 
-    #[test]
-    fn low_bitrate_renders_kbps() {
-        let m = MediaMeta {
-            vbitrate_kbps: Some(300),
-            ..Default::default()
-        };
-        assert!(m.quality_line().contains("300k"));
-        let m = MediaMeta {
-            vbitrate_kbps: Some(1500),
-            ..Default::default()
-        };
-        assert!(m.quality_line().contains("2Mbps"));
-    }
 
     #[test]
     fn codec_label_prefix_match() {

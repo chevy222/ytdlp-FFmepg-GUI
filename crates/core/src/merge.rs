@@ -37,11 +37,9 @@ pub struct MergeParams {
 }
 
 impl MergeParams {
+    /// 目标扩展名（容器 → 扩展，与转码共用 `paths::container_extension`，C2）。
     pub fn extension(&self) -> &'static str {
-        match self.container.as_str() {
-            "mkv" => "mkv",
-            _ => "mp4",
-        }
+        crate::paths::container_extension(&self.container)
     }
 }
 
@@ -77,31 +75,10 @@ fn total_duration(metas: &[MediaMeta]) -> f64 {
     metas.iter().filter_map(|m| m.duration_secs).sum()
 }
 
-/// 输出路径（碰撞安全命名，同 TC-17）。
+/// 输出路径（碰撞安全命名，同 TC-17；碰撞处理实现在 `paths::unique_output_path`，C2）。
 pub fn output_path(params: &MergeParams) -> Result<PathBuf> {
     let base = crate::transcode::sanitize_filename(&params.filename);
-    let ext = params.extension();
-    let candidate = params.out_dir.join(format!("{}.{}", base, ext));
-    if !candidate.exists() {
-        return Ok(candidate);
-    }
-    match params.collision_policy.as_str() {
-        "skip" => Err(CoreError::Io(std::io::Error::other(format!(
-            "输出已存在，按策略跳过：{}",
-            candidate.display()
-        )))),
-        _ => {
-            for i in 1..1000 {
-                let p = params.out_dir.join(format!("{} ({}).{}", base, i, ext));
-                if !p.exists() {
-                    return Ok(p);
-                }
-            }
-            Err(CoreError::Io(std::io::Error::other(
-                "无法生成不冲突的输出名",
-            )))
-        }
-    }
+    crate::paths::unique_output_path(&params.out_dir, &base, params.extension(), &params.collision_policy)
 }
 
 /// 编码器参数（与转码一致：auto = QSV → libx265 兜底；显式 nvenc/amf）。

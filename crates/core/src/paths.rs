@@ -117,6 +117,45 @@ pub fn atomic_write_json<T: serde::Serialize>(path: &Path, value: &T) -> crate::
     Ok(())
 }
 
+/// 容器名 → 输出扩展名（mkv → mkv，其余 → mp4；转码/合并共用，C2）。
+pub fn container_extension(container: &str) -> &'static str {
+    match container {
+        "mkv" => "mkv",
+        _ => "mp4",
+    }
+}
+
+/// 输出文件名碰撞处理（TC-11）：`skip` 且已存在 → 报错；`auto_inc` →
+/// 依次尝试 `base (1).ext`、`base (2).ext` …（上限 1000）。转码与合并共用（C2）。
+pub fn unique_output_path(
+    out_dir: &Path,
+    base: &str,
+    ext: &str,
+    policy: &str,
+) -> crate::Result<PathBuf> {
+    let candidate = out_dir.join(format!("{base}.{ext}"));
+    if !candidate.exists() {
+        return Ok(candidate);
+    }
+    match policy {
+        "skip" => Err(crate::CoreError::Io(std::io::Error::other(format!(
+            "输出已存在，按策略跳过：{}",
+            candidate.display()
+        )))),
+        _ => {
+            for i in 1..1000 {
+                let p = out_dir.join(format!("{base} ({i}).{ext}"));
+                if !p.exists() {
+                    return Ok(p);
+                }
+            }
+            Err(crate::CoreError::Io(std::io::Error::other(
+                "无法生成不冲突的输出名",
+            )))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,5 +210,27 @@ mod tests {
         assert_eq!(v["a"], 2);
         // 临时文件不残留
         assert!(!root.path().join("config/config.json.tmp").exists());
+    }
+
+    #[test]
+    fn unique_output_path_fresh_and_auto_inc() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path();
+        let p = unique_output_path(dir, "视频", "mp4", "auto_inc").unwrap();
+        assert_eq!(p, dir.join("视频.mp4"));
+        std::fs::File::create(&p).unwrap();
+        // 已存在 → auto_inc 生成 (1)
+        let p2 = unique_output_path(dir, "视频", "mp4", "auto_inc").unwrap();
+        assert_eq!(p2, dir.join("视频 (1).mp4"));
+    }
+
+    #[test]
+    fn unique_output_path_skip_errors() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path();
+        std::fs::write(dir.join("a.mp4"), "x").unwrap();
+        assert!(unique_output_path(dir, "a", "mp4", "skip").is_err());
+        // 不同扩展名不冲突
+        assert!(unique_output_path(dir, "a", "mkv", "skip").is_ok());
     }
 }

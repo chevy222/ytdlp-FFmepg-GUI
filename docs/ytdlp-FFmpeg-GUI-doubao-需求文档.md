@@ -157,7 +157,7 @@ DownloadFormat
   format_id · label · height · ext · vcodec · acodec · filesize_bytes · fps · tbr_kbps · note · audio_only
 ```
 
-画质/格式列 12 项渲染（核心层与前端同一口径）：
+画质/格式列 12 项渲染（由前端 `ui/index.html::qualityLine` 渲染；分辨率按短边口径。P1-6 定案：后端 `quality_line`/`resolution_label`/`sample_rate_label` 为零调用死代码，已删除；`human_size` 保留供格式标签使用）：
 `容器 · 分辨率(≥2160→4K，≥1440→2K，其余 {短边}P) · 编码 · 视频码率(NMbps) · 帧率 · 音频编码 · 采样率(48kHz) · 音频码率(Nk) · 声道数(N声道) · 最大音量(N.NdB) · 时长(mm:ss) · 大小`
 实现：`model.rs::MediaMeta::quality_line`、`ui/index.html::qualityLine`。
 

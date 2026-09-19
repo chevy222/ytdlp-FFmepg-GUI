@@ -72,7 +72,7 @@ checkout → 安装 rust stable(+rustfmt,clippy) → 缓存
 
 ## 4. 质量基线
 
-- `cargo test -p ytdlp-core`：**153 个用例**（`#[cfg(test)]` 静态计数，分布：model 32、download 15、exec 13、probe 13、config 12、transcode 13、history 10、merge 8、tool_download 8、cookies 7、worker 6、cli 5、paths 4、timefmt 4、thumbs 3）。另有 `src-tauri`（login）4 个用例，`cargo test --workspace` 时一并执行（CI 门禁只跑 core）。
+- `cargo test -p ytdlp-core`：**150 个用例**（`#[cfg(test)]` 静态计数，分布：model 27、download 16、exec 12、probe 13、config 12、transcode 13、history 10、merge 8、tool_download 8、cookies 7、worker 6、cli 5、paths 6、timefmt 4、thumbs 3）。另有 `src-tauri`（login）4 个用例，`cargo test --workspace` 时一并执行（CI 门禁只跑 core）。
 - `cargo clippy -p ytdlp-core --all-targets -- -D warnings` 与 `cargo clippy -p ytdlp-gui --all-targets -- -D warnings` 均为 CI 门禁。
 - 核心层测试全部平台无关（不依赖 Windows 特有 API、不硬编码 `.exe` 后缀——按 `cfg(windows)` 断言）；涉及子进程的测试只做存在性/解析断言，不依赖外部工具是否安装。
 

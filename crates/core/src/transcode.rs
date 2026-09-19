@@ -46,41 +46,16 @@ pub struct TranscodeParams {
 }
 
 impl TranscodeParams {
-    /// 目标扩展名（容器 → 扩展）。
+    /// 目标扩展名（容器 → 扩展，与合并共用 `paths::container_extension`，C2）。
     pub fn extension(&self) -> &'static str {
-        match self.container.as_str() {
-            "mkv" => "mkv",
-            _ => "mp4",
-        }
+        crate::paths::container_extension(&self.container)
     }
 
-    /// 输出路径（模板命名 + 碰撞策略；skip 且已存在时返回 Err）。
+    /// 输出路径（模板命名 + 碰撞策略；skip 且已存在时返回 Err。
+    /// 碰撞处理实现在 `paths::unique_output_path`，与合并共用，C2）。
     pub fn output_path(&self) -> Result<PathBuf> {
         let base = apply_filename_template(&self.filename_template, &self.title);
-        let ext = self.extension();
-        let file = format!("{}.{}", base, ext);
-        let candidate = self.out_dir.join(&file);
-        if !candidate.exists() {
-            return Ok(candidate);
-        }
-        match self.collision_policy.as_str() {
-            "skip" => Err(CoreError::Io(std::io::Error::other(format!(
-                "输出已存在，按策略跳过：{}",
-                candidate.display()
-            )))),
-            _ => {
-                // auto_inc：名 (1).ext / (2).ext …
-                for i in 1..1000 {
-                    let p = self.out_dir.join(format!("{} ({}).{}", base, i, ext));
-                    if !p.exists() {
-                        return Ok(p);
-                    }
-                }
-                Err(CoreError::Io(std::io::Error::other(
-                    "无法生成不冲突的输出名",
-                )))
-            }
-        }
+        crate::paths::unique_output_path(&self.out_dir, &base, self.extension(), &self.collision_policy)
     }
 }
 
