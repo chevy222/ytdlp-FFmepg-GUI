@@ -1,4 +1,565 @@
-/
+//! Tauri 命令层：统一列表 CRUD + 解析/下载/取消/删除 + 配置 + Cookie + 依赖自检。
+//!
+//! 后台任务用 std::thread + 事件 `item:update`（payload = MediaItem）回推前端；
+//! 关键状态变更才持久化 history.json（进度高频更新只 emit 不落盘）。
+
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use tauri::{AppHandle, Emitter, Manager, State};
+use ytdlp_core::config::AppConfig;
+use ytdlp_core::config::NetworkConfig;
+use ytdlp_core::cookies::CookieStore;
+use ytdlp_core::download::{
+    self, cleanup_on_cancel, post_process, probe_output, run_download, DownloadParams,
+};
+use ytdlp_core::exec::{ToolResolver, ToolSource};
+use ytdlp_core::merge::{self, MergeParams};
+use ytdlp_core::model::{ItemKind, MediaItem, Status};
+use ytdlp_core::probe::{self, ProbeErrorKind};
+use ytdlp_core::tool_download::{installed_matches, InstalledIndex, ToolDownloader, ToolKind};
+use ytdlp_core::transcode::{self, TranscodeParams};
+use ytdlp_core::worker::SubmitOutcome;
+use ytdlp_core::{transition, CoreError};
+
+use crate::login;
+use crate::state::AppState;
+
+/// 硬件编码器探测（TC-16）：QSV/NVENC/AMF 可用性，供设置页标注。
+#[tauri::command]
+pub fn probe_hw_encoders(app: AppHandle) -> CmdResult<serde_json::Value> {
+    let state = app.state::<AppState>();
+    let resolver = state.resolver();
+    let hw =
+        transcode::detect_hw_encoders(&resolver).map_err(|e| format!("探测编码器失败：{}", e))?;
+    Ok(serde_json::json!({ "qsv": hw.qsv, "nvenc": hw.nvenc, "amf": hw.amf }))
+}
+
+/// 依赖页「下载 / 更新」结果。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ToolInstallResult {
+    /// 本次是否真的下载并安装了文件（false = 已有托管副本 / 已是最新）
+    pub updated: bool,
+    /// 该工具当前生效的路径（「下载」成功后前端写回设置输入框）
+    pub path: String,
+    /// 安装后（或当前）的版本号；工具不报版本时为 None
+    pub version: Option<String>,
+    /// 给用户看的一句话结论
+    pub message: String,
+}
+
+/// 「下载 / 更新」的执行计划。
+enum InstallPlan {
+    /// 不需要下载，直接把结论返回前端
+    Done(ToolInstallResult),
+    /// 需要下载并安装到该路径
+    Download(PathBuf),
+}
+
+/// 依赖页"链接"弹窗展示的地址（觉得下载慢时用户可手动下载）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ToolUrlInfo {
+    /// dependencies.* 配置键（与前端 data-tool 同名）
+    pub tool: String,
+    /// 显示名（yt-dlp / ffmpeg / …）
+    pub name: String,
+    /// 程序「下载/更新」实际使用的包地址
+    pub download_url: String,
+    /// 构建/发布页（人工查版本、手动下载的入口）
+    pub check_url: String,
+}
+
+/// 四个工具的下载/版本检查地址（纯常量，无网络请求）。
+#[tauri::command]
+pub fn tool_urls() -> CmdResult<Vec<ToolUrlInfo>> {
+    let keys = ["yt_dlp_path", "ffmpeg_path", "ffprobe_path", "deno_path"];
+    let mut out = Vec::with_capacity(keys.len());
+    for key in keys {
+        let kind =
+            ToolKind::from_config_key(key).ok_or_else(|| format!("内部错误：未知工具键 {key}"))?;
+        out.push(ToolUrlInfo {
+            tool: key.to_string(),
+            name: kind.tool().name().to_string(),
+            download_url: kind.url().to_string(),
+            check_url: kind.check_page_url().to_string(),
+        });
+    }
+    Ok(out)
+}
+
+/// 依赖页「下载 / 更新」（进度经 `tool:progress` 上报，下载中前端按钮变"取消"）。
+///
+/// - `update=false`（下载）：固定装到 `<exe 同级>\tools\`；已有托管副本就直接返回
+///   （不重复下载）。成功后前端把路径写回设置，之后优先用这份。
+/// - `update=true`（更新）：只更新**当前生效的那一份**——设置里填的路径或 `tools\`
+///   托管副本；当前用的是系统 PATH 里的（不归本程序管）则提示用户自己更新。
+///   更新前先判断有没有新版本：yt-dlp / deno 比 release tag，ffmpeg / ffprobe 比
+///   gyan.dev 的 release-version 与本地版本；版本取不到再回退指纹比对。已是最新就不下载。
+#[tauri::command]
+pub async fn download_tool(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    tool: String,
+    update: bool,
+) -> CmdResult<ToolInstallResult> {
+    let kind = ToolKind::from_config_key(&tool).ok_or_else(|| format!("未知工具键：{tool}"))?;
+    // 注册取消标志（前端点"取消"置 true）。同一工具不允许并发下载：
+    // 重复注册会覆盖旧标志，导致第一次下载的"取消"指向失效
+    let cancel_key = format!("tool-dl-{tool}");
+    if state.cancel_flag(&cancel_key).is_some() {
+        return Err("该工具正在下载中".into());
+    }
+    let flag = state.register_cancel(&cancel_key);
+    let tools_dir = state.paths.tools_dir();
+    let dl = ToolDownloader::new(tools_dir.clone(), state.paths.temp_dir().join("tool_dl"));
+    let ctx = ToolInstallCtx {
+        app: &app,
+        state: state.inner(),
+        dl: &dl,
+        tools_dir: tools_dir.as_path(),
+        key: tool.as_str(),
+    };
+
+    let outcome = run_tool_install(&ctx, kind, update, &flag).await;
+    // 无论成功/失败/取消（含"未找到""已是最新"这类早退）都清理取消标志，
+    // 否则注册表条目泄漏，之后每次点按钮都报"该工具正在下载中"
+    state.cancels.lock().unwrap().remove(&cancel_key);
+    outcome
+}
+
+/// 「下载 / 更新」共用的调用上下文（免得把同一批参数串成一长排）。
+struct ToolInstallCtx<'a> {
+    app: &'a AppHandle,
+    state: &'a AppState,
+    dl: &'a ToolDownloader,
+    tools_dir: &'a Path,
+    /// 配置键名（`yt_dlp_path` 等）：进度事件与安装指纹都用它作标识
+    key: &'a str,
+}
+
+async fn run_tool_install(
+    ctx: &ToolInstallCtx<'_>,
+    kind: ToolKind,
+    update: bool,
+    cancel: &Arc<AtomicBool>,
+) -> CmdResult<ToolInstallResult> {
+    let dest = match plan_tool_install(ctx, kind, update)? {
+        InstallPlan::Done(done) => return Ok(done),
+        InstallPlan::Download(dest) => dest,
+    };
+    let app2 = ctx.app.clone();
+    let dl2 = ctx.dl.clone().with_cancel(Some(cancel.clone()));
+    let key2 = ctx.key.to_string();
+    let dest2 = dest.clone();
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        let mut prog = |phase: String, pct: f32| {
+            let _ = app2.emit(
+                "tool:progress",
+                serde_json::json!({ "tool": key2, "phase": phase, "percent": pct }),
+            );
+        };
+        let done = dl2.download(kind, &dest2, &mut prog)?;
+        let version = ytdlp_core::exec::tool_version_at(kind.tool(), &done.path);
+        Ok::<_, String>((done, version))
+    })
+    .await
+    .map_err(|e| format!("下载任务异常：{e}"))?;
+    let (done, version) = joined?;
+
+    // 记下这次安装的远端产物指纹：下次「更新」靠它判断有没有新版本
+    if let Some(sha) = &done.remote_sha256 {
+        let mut index = InstalledIndex::load(ctx.tools_dir);
+        index.record(ctx.key, &done.path, sha);
+        if let Err(e) = index.save(ctx.tools_dir) {
+            eprintln!("{e}");
+        }
+    }
+
+    let name = kind.tool().name();
+    let vs = version
+        .as_deref()
+        .map(|v| format!("（{v}）"))
+        .unwrap_or_default();
+    let verb = if update {
+        "已更新到"
+    } else {
+        "已安装到"
+    };
+    Ok(ToolInstallResult {
+        updated: true,
+        path: done.path.to_string_lossy().into_owned(),
+        version,
+        message: format!("{name}{vs}{verb} {}", done.path.display()),
+    })
+}
+
+/// 下载 / 更新的前置判断（联网的只有"查版本号"或"查产物指纹"一步）。
+fn plan_tool_install(
+    ctx: &ToolInstallCtx<'_>,
+    kind: ToolKind,
+    update: bool,
+) -> CmdResult<InstallPlan> {
+    let name = kind.tool().name();
+    if !update {
+        // 下载：固定落 tools\，已有托管副本就不重复下
+        let dest = ctx.dl.target_path(kind);
+        if ctx.dl.is_installed(kind) {
+            let version = ytdlp_core::exec::tool_version_at(kind.tool(), &dest);
+            let vs = version
+                .as_deref()
+                .map(|v| format!("（{v}）"))
+                .unwrap_or_default();
+            return Ok(InstallPlan::Done(ToolInstallResult {
+                updated: false,
+                path: dest.to_string_lossy().into_owned(),
+                version,
+                message: format!("{name}{vs}已在 tools\\ 中；如需检查新版本请点\"更新\""),
+            }));
+        }
+        return Ok(InstallPlan::Download(dest));
+    }
+
+    // 更新：只动"当前生效的那一份"
+    let resolver = ctx.state.resolver();
+    let (target, source) = resolver
+        .resolve_with_source(kind.tool())
+        .map_err(|e| format!("{e}。请先点\"下载\"装一份托管副本，或在设置里填写路径"))?;
+    if source == ToolSource::Path {
+        return Err(format!(
+            "{name} 当前用的是系统 PATH 里的 {}：请在系统里手动更新，或点\"下载\"在本程序 tools\\ 目录装一份托管副本（之后就能在这里更新）",
+            target.display()
+        ));
+    }
+
+    let local = ytdlp_core::exec::tool_version_at(kind.tool(), &target);
+    // 有版本号的（yt-dlp / deno）比版本号；没有版本号的（ffmpeg / ffprobe 滚动构建）比产物指纹
+    let unchanged = match (&local, ctx.dl.latest_version(kind)) {
+        (Some(l), Some(remote)) => ytdlp_core::exec::versions_equal(l, &remote),
+        _ => {
+            let remote = ctx.dl.remote_sha(kind);
+            let index = InstalledIndex::load(ctx.tools_dir);
+            installed_matches(index.get(ctx.key), &target, remote.as_deref())
+        }
+    };
+    if unchanged {
+        let vs = local
+            .as_deref()
+            .map(|v| format!("（{v}）"))
+            .unwrap_or_default();
+        return Ok(InstallPlan::Done(ToolInstallResult {
+            updated: false,
+            path: target.to_string_lossy().into_owned(),
+            version: local,
+            message: format!("{name}{vs}已是最新，无需更新"),
+        }));
+    }
+    Ok(InstallPlan::Download(target))
+}
+
+/// 取消进行中的工具下载（前端点"取消"按钮）。
+#[tauri::command]
+pub fn cancel_tool_download(state: State<'_, AppState>, tool: String) -> CmdResult<()> {
+    let key = format!("tool-dl-{tool}");
+    if let Some(flag) = state.cancel_flag(&key) {
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// 依赖自检项（前端显示）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ToolStatus {
+    pub tool: String,
+    pub path: Option<String>,
+    pub version: Option<String>,
+    pub ok: bool,
+}
+
+type CmdResult<T> = Result<T, String>;
+
+fn err_string(e: impl std::fmt::Display) -> String {
+    e.to_string()
+}
+
+/// 更新条目并返回克隆（变更即原子写仅对状态迁移生效由调用方决定）。
+fn update_item(app: &AppHandle, id: &str, f: impl FnOnce(&mut MediaItem)) -> Option<MediaItem> {
+    let state = app.state::<AppState>();
+    let mut hist = state.history.lock().unwrap();
+    let item = hist.get(id)?.clone();
+    let mut item = item;
+    f(&mut item);
+    hist.upsert(item.clone());
+    drop(hist);
+    let _ = app.emit("item:update", &item);
+    Some(item)
+}
+
+/// 状态迁移收口（P1-1）：update_item 闭包内一律走 transition_in——
+/// 白名单之外的迁移被拒绝并保留原状态，保证需求 §9 的状态机白名单真正有约束力。
+fn transition_in(it: &mut MediaItem, to: Status) {
+    if transition(it.status, to).is_ok() {
+        it.status = to;
+    }
+}
+
+/// 记录失败日志：多行错误信息拆成逐条（单条塞多行在 UI 上易被截断观感），
+/// 首行带前缀，其余行原样追加。
+fn log_error_lines(app: &AppHandle, id: &str, prefix: &str, e: &CoreError) {
+    let error_text = e.to_string();
+    let mut lines = error_text.lines();
+    if let Some(first) = lines.next() {
+        log_item(app, id, format!("{prefix}{first}"));
+    }
+    for l in lines {
+        if !l.trim().is_empty() {
+            log_item(app, id, l.to_string());
+        }
+    }
+}
+
+/// 记录日志行并 emit。
+fn log_item(app: &AppHandle, id: &str, line: impl Into<String>) {
+    update_item(app, id, |it| {
+        it.push_log(line);
+    });
+}
+
+/// 持久化（状态迁移后调用）。
+fn persist(app: &AppHandle) {
+    app.state::<AppState>().persist();
+}
+
+// ---------- 添加与解析 ----------
+
+#[tauri::command]
+pub fn add_url(app: AppHandle, urls: Vec<String>) -> CmdResult<()> {
+    let state = app.state::<AppState>();
+    let mut hist = state.history.lock().unwrap();
+    for raw in urls {
+        let url = clean_url(&raw);
+        if url.is_empty() {
+            continue;
+        }
+        // DL-01：只接受 http(s):// —— UI 与 CLI 两条入口在此共用同一校验，
+        // 否则 CLI 裸参数会把本地文件名当 URL 入列
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            continue;
+        }
+        let item = MediaItem::from_url(url);
+        let id = item.id.clone();
+        hist.upsert(item);
+        // 解析线程不占并发 slot
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            run_probe(app2, id);
+        });
+    }
+    drop(hist);
+    persist(&app);
+    let _ = app.emit("list:changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn add_local(app: AppHandle, paths: Vec<String>, recursive: bool) -> CmdResult<()> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    for p in paths {
+        let pb = PathBuf::from(&p);
+        if pb.is_dir() {
+            scan_dir(&pb, recursive, &mut files);
+        } else if pb.is_file() {
+            files.push(pb);
+        }
+    }
+    if files.is_empty() {
+        return Err("没有找到可添加的文件".into());
+    }
+    let state = app.state::<AppState>();
+    let mut hist = state.history.lock().unwrap();
+    for f in files {
+        let item = MediaItem::from_path(f.to_string_lossy().into_owned());
+        let id = item.id.clone();
+        hist.upsert(item);
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            run_probe(app2, id);
+        });
+    }
+    drop(hist);
+    persist(&app);
+    let _ = app.emit("list:changed", ());
+    Ok(())
+}
+
+fn scan_dir(dir: &Path, recursive: bool, out: &mut Vec<PathBuf>) {
+    let rd = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(_) => return,
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            if recursive {
+                scan_dir(&p, true, out);
+            }
+        } else if download::is_media_file(&p) {
+            out.push(p);
+        }
+    }
+}
+
+/// URL 清洗（DL-01）：去引号/空白，抖音 modal_id 归一化由 yt-dlp 处理。
+fn clean_url(raw: &str) -> String {
+    raw.trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim()
+        .to_string()
+}
+
+/// 解析任务（URL 或本地；阻塞运行在线程中）。
+fn run_probe(app: AppHandle, id: String) {
+    let state = app.state::<AppState>();
+    let item = {
+        let hist = state.history.lock().unwrap();
+        hist.get(&id).cloned()
+    };
+    let Some(item) = item else {
+        return;
+    };
+    log_item(&app, &id, "开始解析元数据…");
+
+    let resolver = state.resolver();
+    let network = state.config.lock().unwrap().network.clone();
+    let netscape = resolve_cookies(&state, &item);
+
+    let playlist_on = state.config.lock().unwrap().download.playlist;
+    let result = if item.url.is_some() {
+        probe::probe_url(
+            &resolver,
+            item.url.as_deref().unwrap_or_default(),
+            netscape.as_deref(),
+            &network,
+            playlist_on,
+            |l| log_item(&app, &id, l),
+        )
+    } else {
+        let path = item.path.clone().unwrap_or_default();
+        probe::probe_local(&resolver, Path::new(&path), |l| log_item(&app, &id, l)).map(|p| {
+            let mut mp = p;
+            let title = item.title.clone();
+            mp.meta.title = Some(title);
+            ytdlp_core::probe::UrlProbe {
+                meta: mp.meta,
+                site: Some("本地文件".into()),
+                host: None,
+                is_playlist: false,
+                thumbnail_url: None,
+            }
+        })
+    };
+
+    match result {
+        Ok(p) => {
+            let url_src = item.url.is_some();
+            update_item(&app, &id, |it| {
+                it.meta = p.meta;
+                it.site = p.site.clone();
+                if p.host.is_some() {
+                    it.host = p.host.clone();
+                }
+                transition_in(it, Status::Ready);
+                it.percent = 0.0;
+                it.error = None;
+                it.push_log("解析完成，已就绪".to_string());
+                if url_src {
+                    it.push_log(format!("可用格式：{} 项", it.meta.download_formats.len()));
+                }
+            });
+            // 封面缩略图（异步生成，不阻塞就绪）
+            {
+                let app2 = app.clone();
+                let id2 = id.clone();
+                let cache_dir = state.paths.cache_dir();
+                let thumb_url = p.thumbnail_url.clone();
+                let local_path = item.path.clone();
+                // 本地文件优先取内嵌封面（元数据），与桌面缩略图同源
+                let cover_idx = p.meta.cover_stream_index;
+                let resolver2 = resolver.clone();
+                let proxy2 = network.proxy_url.clone();
+                tauri::async_runtime::spawn(async move {
+                    let dest = ytdlp_core::thumbs::thumb_path(&cache_dir, &id2);
+                    let r = if let Some(u) = thumb_url {
+                        if u.is_empty() {
+                            Ok(())
+                        } else {
+                            // 直连失败自动带设置里的代理重试一次（YouTube 等站点
+                            // 缩略图服务器直连拉不动，主下载却走代理）
+                            ytdlp_core::thumbs::save_remote_thumb(&u, &dest, Some(proxy2.as_str()))
+                        }
+                    } else if let Some(p) = local_path {
+                        ytdlp_core::thumbs::ensure_thumb(
+                            &resolver2,
+                            std::path::Path::new(&p),
+                            &dest,
+                            cover_idx,
+                            &mut |l| log_item(&app2, &id2, l),
+                        )
+                    } else {
+                        Ok(())
+                    };
+                    if let Ok(()) = r {
+                        update_item(&app2, &id2, |it| {
+                            it.thumb = Some(dest.to_string_lossy().into_owned());
+                        });
+                    }
+                });
+            }
+            // URL 已就绪：触发 5 秒倒计时自动下载（前端计时，后端只发可下载信号）
+            if url_src {
+                let _ = app.emit("item:ready", serde_json::json!({ "id": id }));
+            }
+            // 播放列表（DL-09）：开启时把合集展开为逐集条目平铺进列表
+            if url_src && playlist_on && p.is_playlist {
+                expand_playlist(&app, &id, &item, &resolver, netscape.as_deref(), &network);
+            }
+        }
+        Err(f) => {
+            let status = if f.kind == ProbeErrorKind::NeedLogin {
+                Status::NeedLogin
+            } else {
+                Status::Failed
+            };
+            update_item(&app, &id, |it| {
+                transition_in(it, status);
+                it.error = Some(f.to_string());
+                // 多行错误逐行落日志：单条塞多行在日志弹窗里会被错误截断
+                let mut lines = f.to_string().lines();
+                if let Some(first) = lines.next() {
+                    it.push_log(format!("解析失败：{first}"));
+                }
+                for l in lines {
+                    if !l.trim().is_empty() {
+                        it.push_log(l.to_string());
+                    }
+                }
+            });
+        }
+    }
+    // 解析阶段的临时文件（导出的 Cookie）随任务私有目录一并清掉，避免明文长期驻留 temp/
+    cleanup_on_cancel(&state.paths.task_temp_dir(&id), netscape.as_deref());
+    persist(&app);
+}
+
+// ---------- 列表 ----------
+
+#[tauri::command]
+pub fn list_items(state: State<'_, AppState>) -> CmdResult<Vec<MediaItem>> {
+    let hist = state.history.lock().unwrap();
+    Ok(hist.items.clone())
+}
+
 // ---------- 动作 ----------
 
 #[tauri::command]
@@ -500,7 +1061,6 @@ fn run_merge_task(app: AppHandle, id: String) {
             filename: job.filename.clone(),
             container: job.container.clone(),
             encoder_mode: job.encoder_mode.clone(),
-            low_power: cfg.transcode.low_power,
             collision_policy: cfg.general.collision_policy.clone(),
             normalize_audio: job.normalize_audio,
             max_gain_db: cfg.general.max_gain_db,

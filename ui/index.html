@@ -129,7 +129,7 @@
   .ops{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:6px}
   .ops .btn.sm + .btn.sm{margin-left:0}
   .countdown{flex:0 0 100%;text-align:right;font-size:11.5px;font-weight:600;color:var(--pri);margin:0 0 2px}
-  .err{font-size:11px;line-height:16px;color:var(--st-fail);cursor:pointer;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  .cell-err{font-size:11px;line-height:16px;color:var(--st-fail);cursor:pointer;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
   /* ===== 空态 ===== */
   .empty{display:none;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center}
   .empty.show{display:flex}
@@ -220,7 +220,7 @@
   .merge-warn.warn{background:var(--st-ready-bg);color:var(--st-ready)}
   .merge-right .set-row .k{flex:0 0 112px}
   .log-list{list-style:none;margin:0;padding:8px 24px 16px;flex:1;overflow:auto;font-size:12px;font-family:Consolas,'Courier New',monospace;min-height:200px}
-  .log-list li{padding:7px 2px;border-bottom:1px solid var(--line-soft);color:var(--ink-2);white-space:pre-wrap;word-break:break-all;overflow-wrap:anywhere}
+  .log-list li{padding:7px 2px;border-bottom:1px solid var(--line-soft);color:var(--ink-2);white-space:pre-wrap;word-break:break-all;overflow-wrap:anywhere;line-height:1.55}
   .log-list li.err{color:var(--st-fail)}
   .fmt-list{list-style:none;margin:0;padding:12px 24px 16px;overflow:auto;flex:1}
   .fmt-list li{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid var(--line-soft);border-radius:var(--r-md);padding:10px 12px;margin-bottom:8px;font-size:12.5px;color:var(--ink-2);transition:border-color .15s,background .15s}
@@ -523,7 +523,7 @@ function progressCell(it){
     return '<div class="prog">'+p.toFixed(1)+'%'+sp+'<div class="bar"><i style="width:'+p+'%"></i></div></div>';
   }
   if (s==='Probing') return '<div class="prog"><span class="spd">解析中…</span></div>';
-  if (it.error) return '<div class="err" data-act="err" data-id="'+esc(it.id)+'" title="'+esc(it.error)+'">'+esc(it.error)+'</div>';
+  if (it.error) return '<div class="cell-err" data-act="err" data-id="'+esc(it.id)+'" title="'+esc(it.error)+'">'+esc(it.error)+'</div>';
   return '<div class="prog">—</div>';
 }
 
@@ -899,9 +899,13 @@ function closeLog(){document.getElementById('logModal').classList.remove('show')
 // ===== 设置 =====
 let curPage='deps';
 function openSettings(){
-  INVOKE('get_config').then(c=>{S.config=c;renderSetPage();document.getElementById('settingsModal').classList.add('show');}).catch(err=>toast(err));
+  INVOKE('get_config').then(c=>{S.config=c;S.configSaved=JSON.stringify(c);renderSetPage();document.getElementById('settingsModal').classList.add('show');}).catch(err=>toast(err));
 }
-function closeSettings(){document.getElementById('settingsModal').classList.remove('show');}
+function closeSettings(){
+  // 防呆：改了没保存就关闭（分流站点/代理不生效的最常见原因），确认后再丢
+  if(S.configSaved!=null && JSON.stringify(S.config)!==S.configSaved && !confirm('设置有未保存的修改，确定关闭（修改将丢失）？'))return;
+  document.getElementById('settingsModal').classList.remove('show');
+}
 document.getElementById('setNav').addEventListener('click', e=>{
   const b=e.target.closest('button[data-page]'); if(!b)return;
   curPage=b.dataset.page;
