@@ -558,8 +558,6 @@ fn classify_ytdlp_error(stderr: &str) -> ProbeFailure {
     }
 }
 
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
