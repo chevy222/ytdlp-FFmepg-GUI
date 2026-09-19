@@ -59,7 +59,7 @@ pub fn output_template(tmpl: &str, playlist: bool) -> &'static str {
     }
 }
 
-/// 默认格式串（DL-03 七级回落 + 画质上限 MAX_H，短边）。
+/// 默认格式串（DL-03 四级回落 + 画质上限 MAX_H，短边）。
 pub fn default_format(max_h: u32) -> String {
     format!("bv*[height<={}]+ba/b[height<={}]/bv*+ba/b", max_h, max_h)
 }
@@ -453,7 +453,7 @@ pub fn run_download(
         return Err(CoreError::Cancelled);
     }
     if !status.success() {
-        let err = read_stderr(stderr);
+        let err = crate::exec::drain_stderr(&mut stderr);
         return Err(CoreError::ProcessFailed {
             program: "yt-dlp".into(),
             code: status.code(),
@@ -509,13 +509,6 @@ pub fn cleanup_on_cancel(temp_dir: &Path, cookies_file: Option<&Path>) {
     if let Some(cf) = cookies_file {
         let _ = std::fs::remove_file(cf);
     }
-}
-
-fn read_stderr(mut stderr: std::process::ChildStderr) -> String {
-    use std::io::Read;
-    let mut buf = String::new();
-    let _ = stderr.read_to_string(&mut buf);
-    buf.trim().to_string()
 }
 
 /// 后处理（DL-04 M1 基础版）：超画质上限降分辨率 + 音量归一化。
@@ -674,7 +667,10 @@ pub fn post_process(
     }
     let status = guard.wait()?;
     if !status.success() {
-        let err = read_stderr_opt(guard.stderr());
+        let err = guard
+            .stderr()
+            .map(|e| crate::exec::drain_stderr(e))
+            .unwrap_or_default();
         on_log(format!("后处理失败（保留原文件）：{}", err));
         let _ = std::fs::remove_file(&out);
         return Ok(input.to_path_buf());
@@ -712,18 +708,6 @@ fn verify_video(resolver: &ToolResolver, path: &Path) -> bool {
     match crate::exec::run_tool_capture(resolver, Tool::Ffprobe, &args) {
         Ok(out) => !decode_text(&out.stdout).trim().is_empty(),
         Err(_) => false,
-    }
-}
-
-fn read_stderr_opt(mut stderr: Option<std::process::ChildStderr>) -> String {
-    use std::io::Read;
-    match &mut stderr {
-        Some(e) => {
-            let mut buf = String::new();
-            let _ = e.read_to_string(&mut buf);
-            buf.trim().to_string()
-        }
-        None => String::new(),
     }
 }
 

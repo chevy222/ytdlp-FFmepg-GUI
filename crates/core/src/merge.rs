@@ -29,7 +29,6 @@ pub struct MergeParams {
     pub container: String,
     /// 编码器：auto | libx265 | nvenc | amf（跟随 设置-转码 默认编码器）
     pub encoder_mode: String,
-    pub low_power: bool,
     pub collision_policy: String,
     /// 合并后可选后处理：音量归一化（MG-05，面板开关）
     pub normalize_audio: bool,
@@ -75,7 +74,7 @@ fn total_duration(metas: &[MediaMeta]) -> f64 {
     metas.iter().filter_map(|m| m.duration_secs).sum()
 }
 
-/// 输出路径（碰撞安全命名，同 TC-17；碰撞处理实现在 `paths::unique_output_path`，C2）。
+/// 输出路径（碰撞安全命名，同 TC-11；碰撞处理实现在 `paths::unique_output_path`）。
 pub fn output_path(params: &MergeParams) -> Result<PathBuf> {
     let base = crate::transcode::sanitize_filename(&params.filename);
     crate::paths::unique_output_path(
@@ -86,26 +85,10 @@ pub fn output_path(params: &MergeParams) -> Result<PathBuf> {
     )
 }
 
-/// 编码器参数（与转码一致：auto = QSV → libx265 兜底；显式 nvenc/amf）。
-fn encoder_args(mode: &str, _low_power: bool) -> (String, Vec<String>) {
-    let sv = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
-    match mode {
-        "libx265" => ("libx265".into(), sv(&["-crf", "23", "-preset", "medium"])),
-        "nvenc" => (
-            "hevc_nvenc".into(),
-            sv(&["-rc", "vbr", "-cq", "23", "-preset", "p5"]),
-        ),
-        "amf" => (
-            "hevc_amf".into(),
-            sv(&["-qp_i", "23", "-qp_p", "23", "-quality", "balanced"]),
-        ),
-        _ => {
-            // auto：交给调用方探测 QSV（合并低频，直接 libx265 兜底语义一致）
-            ("libx265".into(), sv(&["-crf", "23", "-preset", "medium"]))
-        }
-    }
+/// 编码器参数：委托转码侧共享参数表（P2-7；合并的 auto 语义 = libx265）。
+fn encoder_args(mode: &str) -> (String, Vec<String>) {
+    crate::transcode::explicit_encoder_args(if mode == "auto" { "libx265" } else { mode })
 }
-
 /// 模式 A：concat demuxer 零重编码直拼。
 #[allow(clippy::too_many_arguments)]
 fn concat_copy(
@@ -161,20 +144,25 @@ fn transcode_segment(
     resolver: &ToolResolver,
     input: &Path,
     out: &Path,
+    main_idx: Option<u32>,
     encoder_mode: &str,
-    low_power: bool,
     target_h: u32,
     cancel: &Arc<AtomicBool>,
     on_progress: &mut dyn FnMut(f32),
     on_log: &mut dyn FnMut(String),
 ) -> Result<()> {
-    let (enc, mut enc_args) = encoder_args(encoder_mode, low_power);
+    let (enc, mut enc_args) = encoder_args(encoder_mode);
     if enc == "libx265" {
-        enc_args.push("-tag:v".into());
+        enc_args.push("-tag:v:0".into());
         enc_args.push("hvc1".into());
     }
     // 目标高度取偶（奇数高度 + 非偶对齐会让 libx265 报 chroma subsampling 错误）
     let target_h = if target_h > 0 { target_h & !1 } else { 1080 };
+    // 主视频用 ffprobe 的**绝对流索引**映射（§11.1）：yt-dlp 产物的封面流常排在
+    // 主视频前，`0:v:0` 会选中 mjpeg 封面，转出来的段就是一张图
+    let main_map = main_idx
+        .map(|i| format!("0:{i}"))
+        .unwrap_or_else(|| "0:v:0".into());
     let mut args: Vec<String> = vec![
         "-hide_banner".into(),
         // 旋转由条目 rot_angle 单一来源（§11.13）：禁用 ffmpeg autorotate，
@@ -183,7 +171,7 @@ fn transcode_segment(
         "-i".into(),
         input.to_string_lossy().into_owned(),
         "-map".into(),
-        "0:v:0".into(),
+        main_map,
         "-map".into(),
         "0:a?".into(),
         "-vf".into(),
@@ -192,7 +180,7 @@ fn transcode_segment(
             "scale=-2:'min(ih,{})':force_original_aspect_ratio=decrease:force_divisible_by=2",
             target_h
         ),
-        "-c:v".into(),
+        "-c:v:0".into(),
         enc,
     ];
     args.extend(enc_args);
@@ -273,9 +261,7 @@ fn run_piped_progress(
         return Err(CoreError::Cancelled);
     }
     if !status.success() {
-        let mut buf = String::new();
-        let mut stderr = stderr;
-        let _ = stderr.read_to_string(&mut buf);
+        let buf = crate::exec::drain_stderr(&mut stderr);
         let err = if buf.trim().is_empty() {
             "（无错误输出）".to_string()
         } else {
@@ -379,8 +365,8 @@ pub fn run_merge(
                     resolver,
                     p,
                     seg,
+                    metas[i].video_stream_index,
                     &params.encoder_mode,
-                    params.low_power,
                     target_h,
                     cancel,
                     &mut prog,
@@ -607,7 +593,6 @@ mod tests {
             filename: "合并_x".into(),
             container: "mp4".into(),
             encoder_mode: "auto".into(),
-            low_power: false,
             collision_policy: "auto_inc".into(),
             normalize_audio: false,
             max_gain_db: 24.0,

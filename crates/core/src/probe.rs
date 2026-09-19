@@ -38,7 +38,6 @@ pub struct UrlProbe {
     pub host: Option<String>,
     /// 是否合集/多 P
     pub is_playlist: bool,
-    pub playlist_count: Option<u32>,
     /// 缩略图 URL（缓存/封面用）
     pub thumbnail_url: Option<String>,
 }
@@ -306,7 +305,6 @@ pub fn parse_ytdlp_json(text: &str) -> Result<UrlProbe> {
     let thumbnail = v["thumbnail"].as_str().map(str::to_string);
     let is_playlist = v["_type"].as_str() == Some("playlist")
         || v["playlist_count"].as_u64().map(|c| c > 1).unwrap_or(false);
-    let playlist_count = v["playlist_count"].as_u64().map(|c| c as u32);
     let webpage_url = v["webpage_url"].as_str().unwrap_or_default();
     let host = crate::cookies::host_from_url(webpage_url);
     let extractor = v["extractor"].as_str().unwrap_or_default();
@@ -384,7 +382,6 @@ pub fn parse_ytdlp_json(text: &str) -> Result<UrlProbe> {
         site,
         host,
         is_playlist,
-        playlist_count,
         thumbnail_url: thumbnail,
     })
 }
@@ -609,7 +606,6 @@ mod tests {
         let text = r#"{"_type":"playlist","playlist_count":5,"title":"合集","formats":[]}"#;
         let p = parse_ytdlp_json(text).unwrap();
         assert!(p.is_playlist);
-        assert_eq!(p.playlist_count, Some(5));
     }
 
     #[test]

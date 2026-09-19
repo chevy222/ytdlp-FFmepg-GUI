@@ -121,7 +121,7 @@ pub fn sanitize_filename(s: &str) -> String {
     }
 }
 
-fn id_hint(_title: &str) -> String {
+fn id_hint(title: &str) -> String {
     // 本地转码无稳定 ID 字段：用标题长度做短指纹，保证不同文件不互相覆盖
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -129,24 +129,35 @@ fn id_hint(_title: &str) -> String {
     format!("{:08x}", h.finish() & 0xFFFF_FFFF)
 }
 
-/// 编码器选择（TC-16 简化：auto = QSV 可用则 hevc_qsv，否则 libx265 兜底；
+/// 显式模式的编码器参数表（libx265 / nvenc / amf；auto 由调用方决定语义，P2-7）。
+/// 转码与合并共用，消除两张逐字相同的参数表。
+pub fn explicit_encoder_args(mode: &str) -> (String, Vec<String>) {
+    let sv = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
+    match mode {
+        "nvenc" => (
+            "hevc_nvenc".into(),
+            sv(&["-rc", "vbr", "-cq", "23", "-preset", "p5"]),
+        ),
+        "amf" => (
+            "hevc_amf".into(),
+            sv(&["-qp_i", "23", "-qp_p", "23", "-quality", "balanced"]),
+        ),
+        _ => ("libx265".into(), sv(&["-crf", "23", "-preset", "medium"])),
+    }
+}
+
+/// 编码器选择（TC-14：auto = QSV 可用则 hevc_qsv，否则 libx265 兜底；
 /// 显式 nvenc/amf/libx265 不被自动覆盖）。
 fn pick_encoder(
     resolver: &ToolResolver,
     mode: &str,
     low_power: bool,
 ) -> Result<(String, Vec<String>)> {
-    let sv = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
+    let (enc, args) = explicit_encoder_args(mode);
     match mode {
-        "libx265" => Ok(("libx265".into(), sv(&["-crf", "23", "-preset", "medium"]))),
-        "nvenc" => Ok((
-            "hevc_nvenc".into(),
-            sv(&["-rc", "vbr", "-cq", "23", "-preset", "p5"]),
-        )),
-        "amf" => Ok((
-            "hevc_amf".into(),
-            sv(&["-qp_i", "23", "-qp_p", "23", "-quality", "balanced"]),
-        )),
+        "libx265" => Ok((enc, args)),
+        "nvenc" => Ok((enc, args)),
+        "amf" => Ok((enc, args)),
         _ => {
             if qsv_available(resolver)? {
                 let mut args = sv(&["-global_quality", "23"]);
@@ -162,7 +173,7 @@ fn pick_encoder(
     }
 }
 
-/// 可用硬件编码器探测结果（TC-16）。
+/// 可用硬件编码器探测结果（TC-14）。
 #[derive(Debug, Clone, Copy, Default, serde::Serialize)]
 pub struct HwEncoders {
     pub qsv: bool,
@@ -190,7 +201,7 @@ pub fn qsv_available(resolver: &ToolResolver) -> Result<bool> {
     Ok(detect_hw_encoders(resolver)?.qsv)
 }
 
-/// 探测可用硬件编码器（QSV/NVENC/AMF，TC-16）。
+/// 探测可用硬件编码器（QSV/NVENC/AMF，TC-14）。
 pub fn detect_hw_encoders(resolver: &ToolResolver) -> Result<HwEncoders> {
     let out = crate::exec::run_tool_capture(resolver, Tool::Ffmpeg, &["-encoders"])?;
     let text = decode_text(&out.stdout);
@@ -624,7 +635,7 @@ pub(crate) fn parse_out_time_us(line: &str) -> Option<u64> {
 /// 执行转码。
 ///
 /// 返回输出路径；取消时终止子进程树并删除输出残留（UL-06）；失败删除半成品保留原文件。
-/// 层级协商（TC-16，参考 bat 的 MODE 1/2/3）：`auto` 且本机 QSV 可用时依次尝试
+/// 层级协商（TC-14，参考 bat 的 MODE 1/2/3）：`auto` 且本机 QSV 可用时依次尝试
 /// 全 GPU → 混合 → 全软件，任一层成功即锁定产物；显式 nvenc/amf/libx265 只跑
 /// 软件解码+滤镜的单层（解码与滤镜留在 CPU，按用户选择不自动回落）。
 pub fn run_transcode(
@@ -743,7 +754,7 @@ fn run_transcode_once(
         return Err(CoreError::Cancelled);
     }
     if !status.success() {
-        let err = read_stderr(stderr);
+        let err = crate::exec::drain_stderr(&mut stderr);
         // 多行 stderr 拆成逐条日志：单条塞进一个 entry 时 UI 侧易被截断观感，
         // 逐行落日志才能完整回看 ffmpeg 的报错原因
         let mut lines = err.lines();
@@ -771,18 +782,6 @@ fn run_transcode_once(
     }
     on_log(format!("转码完成：{}", out.display()));
     Ok(out)
-}
-
-fn read_stderr(mut stderr: std::process::ChildStderr) -> String {
-    use std::io::Read;
-    let mut buf = String::new();
-    let _ = stderr.read_to_string(&mut buf);
-    let t = buf.trim().to_string();
-    if t.is_empty() {
-        "（无错误输出）".into()
-    } else {
-        t
-    }
 }
 
 #[cfg(test)]

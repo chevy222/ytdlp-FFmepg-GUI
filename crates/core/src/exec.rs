@@ -403,6 +403,14 @@ pub fn decode_text(bytes: &[u8]) -> String {
     }
 }
 
+/// 排空子进程 stderr 并收集为字符串（trim 后返回；失败原因收集用，P2-8）。
+pub fn drain_stderr(stderr: &mut std::process::ChildStderr) -> String {
+    use std::io::Read;
+    let mut buf = String::new();
+    let _ = stderr.read_to_string(&mut buf);
+    buf.trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

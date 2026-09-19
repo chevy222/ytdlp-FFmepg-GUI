@@ -109,8 +109,10 @@ impl AppState {
 
     /// 持久化历史（变更即原子写，写失败降级为内存态并告警）。
     pub fn persist(&self) {
-        let history = self.history.lock().unwrap();
-        if let Err(e) = history.save(&self.paths.history_file()) {
+        // §11.15 锁纪律：锁内只取快照，序列化 + 写盘在锁外——
+        // 持锁写盘（满载 100 条 × 300 行日志时毫秒到百毫秒级）会阻塞所有 update_item
+        let snapshot = self.history.lock().unwrap().clone();
+        if let Err(e) = snapshot.save(&self.paths.history_file()) {
             eprintln!("history 持久化失败（保持内存态）：{}", e);
         }
     }

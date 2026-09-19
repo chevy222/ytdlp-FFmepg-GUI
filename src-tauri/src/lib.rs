@@ -41,7 +41,6 @@ pub fn run() {
             commands::add_url,
             commands::add_local,
             commands::list_items,
-            commands::get_item,
             commands::start_download,
             commands::start_transcode,
             commands::start_merge,

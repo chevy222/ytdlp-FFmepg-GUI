@@ -757,6 +757,9 @@ function mergeWarn(){
   const same=metas.every(m=>v(m)===first);
   if(same){el.className='merge-warn ok';el.textContent='各段编码/分辨率/帧率/音频/采样率一致 → 零重编码直拼（速度最快，无损）。';}
   else{el.className='merge-warn warn';el.textContent='检测到参数不一致（编码/分辨率/帧率/音频等）→ 将按所选编码器统一转码后拼接，耗时较长。';}
+  // P1-2：手动旋转不参与合并（直拼无法逐段旋转，统一转码段也未接 rot_angle）
+  const rotated=list.some(it=>{const ra=it.rot_angle;const d=typeof ra==='number'?ra:((ra&&ra.degrees)||0);return d!==0;});
+  if(rotated){el.className='merge-warn warn';el.textContent+=' ⚠ 有条目带手动旋转：合并不会应用旋转，如需旋转请先对单条目转码。';}
 }
 document.getElementById('btnMergeOk').addEventListener('click',()=>{
   const ids=M.ids;

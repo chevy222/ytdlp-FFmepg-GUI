@@ -97,7 +97,7 @@ pub struct GeneralConfig {
     pub concurrency: u32,
     /// 启动时检查更新（默认开启）
     pub check_update: bool,
-    /// 历史上限（默认 100，上限 200，N5 统一）
+    /// 历史上限（默认 100，上限 200，§6 统一）
     pub history_limit: usize,
 }
 
