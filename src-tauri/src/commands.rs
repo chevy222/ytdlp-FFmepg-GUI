@@ -667,6 +667,9 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
     let id2 = id.clone();
     let app3 = app.clone();
     let id3 = id.clone();
+    // 里程碑诊断：后端确实解析到中间进度的直接证据（进日志弹窗可查，
+    // 用于区分"后端没解析到"与"前端没渲染"两类问题）
+    let band = std::cell::Cell::new(0u8);
     let prog_result = run_download(
         &resolver,
         &url,
@@ -691,6 +694,13 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
                     }
                 }
             });
+            if p.file.is_none() && p.percent < 100.0 {
+                let b = (p.percent / 25.0).floor() as u8;
+                if b > band.get() && b >= 1 {
+                    band.set(b);
+                    log_item(&app3, &id3, format!("下载进度 {:.0}%（后端已解析到中间进度）", p.percent));
+                }
+            }
         },
         move |l| log_item(&app3, &id3, l),
     );
@@ -1415,6 +1425,10 @@ fn run_transcode_task(app: AppHandle, id: String) {
     };
     let app2 = app.clone();
     let id2 = id.clone();
+    let app4 = app.clone();
+    let id4 = id.clone();
+    // 里程碑诊断：与下载同口径，区分"后端没解析到"与"前端没渲染"
+    let band = std::cell::Cell::new(0u8);
     let result = transcode::run_transcode(
         &state.resolver(),
         &params,
@@ -1424,6 +1438,13 @@ fn run_transcode_task(app: AppHandle, id: String) {
             update_item(&app2, &id2, |it| {
                 it.percent = pct;
             });
+            if pct < 100.0 {
+                let b = (pct / 25.0).floor() as u8;
+                if b > band.get() && b >= 1 {
+                    band.set(b);
+                    log_item(&app4, &id4, format!("转码进度 {:.0}%（后端已解析到中间进度）", pct));
+                }
+            }
         },
         |line| log_item(&app, &id, line),
     );

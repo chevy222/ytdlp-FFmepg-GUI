@@ -725,6 +725,11 @@ fn run_transcode_once(
         .ok_or_else(|| CoreError::Io(std::io::Error::other("无法读取 ffmpeg 错误输出")))?;
 
     let duration = meta.duration_secs.unwrap_or(0.0);
+    if duration <= 0.0 {
+        // 无时长就无法把 out_time_us 换算成百分比：现象是进度 0% 直跳 100%
+        // （等待结束时无条件 on_progress(100)）。记录一条日志帮助定位 meta 缺时长
+        on_log("源时长未知，无法换算百分比进度".to_string());
+    }
     let reader = std::io::BufReader::new(stdout);
     for line in reader.lines() {
         let line = match line {
