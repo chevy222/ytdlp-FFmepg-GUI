@@ -57,6 +57,8 @@ pub struct TranscodeConfig {
     pub max_h: u32,
     /// 码率封顶 kbps
     pub brcap_kbps: Option<u32>,
+    /// 兜底码率 kbps：封顶留空时的 maxrate 兜底（0 = 不兜底）
+    pub br_default_kbps: u32,
     /// 编码器模式：auto | libx265 | nvenc | amf
     pub force_encoder_mode: String,
     /// QSV low_power
@@ -71,6 +73,7 @@ impl Default for TranscodeConfig {
             max_w: 1920,
             max_h: 1080,
             brcap_kbps: Some(5000),
+            br_default_kbps: 8000,
             force_encoder_mode: "auto".into(),
             low_power: true,
             keep_cover: true,

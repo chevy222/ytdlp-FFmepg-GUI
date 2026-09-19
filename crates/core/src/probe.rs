@@ -5,7 +5,6 @@
 //!
 //! 解析 JSON → MediaMeta 的转换均为纯函数，可单测；子进程调用薄封装在顶层。
 
-use std::io::BufRead;
 use std::path::Path;
 use std::process::Stdio;
 
@@ -15,13 +14,7 @@ use crate::config::NetworkConfig;
 use crate::exec::{decode_text, ChildGuard, Tool, ToolResolver};
 use crate::model::{AudioVolume, DownloadFormat, MediaMeta};
 use crate::Result;
-
-/// 解析来源。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProbeSource {
-    YtDlp,
-    Ffprobe,
-}
+
 
 /// 解析失败分类（MD-05）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,9 +36,7 @@ pub enum ProbeErrorKind {
 pub struct UrlProbe {
     pub meta: MediaMeta,
     pub site: Option<String>,
-    pub host: Option<String>,
-    /// 是否需要登录才能下载
-    pub needs_login: bool,
+    pub host: Option<String>,
     /// 是否合集/多 P
     pub is_playlist: bool,
     pub playlist_count: Option<u32>,
@@ -392,8 +383,7 @@ pub fn parse_ytdlp_json(text: &str) -> Result<UrlProbe> {
     Ok(UrlProbe {
         meta,
         site,
-        host,
-        needs_login: false,
+        host,
         is_playlist,
         playlist_count,
         thumbnail_url: thumbnail,
@@ -451,6 +441,8 @@ pub fn parse_ffprobe_json(text: &str) -> MediaMeta {
                 if meta.video_stream_index.is_none() {
                     meta.video_stream_index = Some(abs_index);
                     meta.height = s["height"].as_u64().map(|h| h as u32);
+                    // 宽度采集（MD-02）：竖屏源 short_edge()/画质列/后处理短边判据都依赖它
+                    meta.width = s["width"].as_u64().map(|w| w as u32);
                     meta.vcodec = s["codec_name"].as_str().map(str::to_string);
                     meta.fps = s["avg_frame_rate"].as_str().and_then(|r| {
                         let mut it = r.split('/');
@@ -565,12 +557,7 @@ fn classify_ytdlp_error(stderr: &str) -> ProbeFailure {
         message: stderr.lines().last().unwrap_or("未知错误").to_string(),
     }
 }
-
-/// 子进程逐行回调辅助（供下载进度等使用）。
-pub fn read_lines<R: BufRead, F: FnMut(String)>(reader: R, mut on_line: F) {
-    for line in reader.lines().map_while(|l| l.ok()) {
-        on_line(line);
-    }
+
 }
 
 #[cfg(test)]
@@ -647,6 +634,8 @@ mod tests {
         }"#;
         let m = parse_ffprobe_json(json);
         assert_eq!(m.height, Some(1080));
+        // 宽度采集（MD-02/P0-2）：竖屏源 short_edge 与画质列都依赖它
+        assert_eq!(m.width, Some(1920));
         assert_eq!(m.vcodec.as_deref(), Some("hevc"));
         assert_eq!(m.fps, Some(60.0));
         assert_eq!(m.vbitrate_kbps, Some(12000));

@@ -276,6 +276,22 @@ pub fn parse_already_downloaded_path(line: &str) -> Option<PathBuf> {
     }
 }
 
+/// 解析仅音频提取完成行：`[ExtractAudio] Destination: <path>`。
+///
+/// `-x --audio-format mp3`（DL-08）的**最终产物**只出现在这一行；此时
+/// `[download] Destination:` 指向的是随后被删除/转码消费掉的中间文件
+/// （`.webm`/`.m4a`），不解析 ExtractAudio 行就会拿错路径 → 音频下载
+/// 成功却被误判为"未找到产物"。
+pub fn parse_extract_audio_path(line: &str) -> Option<PathBuf> {
+    let t = line.trim();
+    let payload = t.strip_prefix("[ExtractAudio] Destination: ")?.trim();
+    if payload.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(payload))
+    }
+}
+
 fn push_unique(v: &mut Vec<PathBuf>, p: PathBuf) {
     if !v.contains(&p) {
         v.push(p);
@@ -292,7 +308,7 @@ pub fn newest_media_since(dir: &Path, since: std::time::SystemTime) -> Option<Pa
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
             let path = e.path();
-            if !path.is_file() || !is_video_file(&path) {
+            if !path.is_file() || !is_media_file(&path) {
                 continue;
             }
             if let Ok(t) = std::fs::metadata(&path).and_then(|m| m.modified()) {
@@ -325,7 +341,7 @@ fn cleanup_cancelled_outputs(
             .map(|t| t >= started)
             .unwrap_or(false)
     };
-    for p in merged.iter().chain(dests.iter()) {
+    for p in extracted.iter().chain(merged.iter()).chain(dests.iter()) {
         if p.is_file() && is_new(p) {
             let _ = std::fs::remove_file(p);
         }
@@ -397,6 +413,8 @@ pub fn run_download(
     let mut merged_paths: Vec<PathBuf> = Vec::new();
     // [download] <文件> has already been downloaded
     let mut already_paths: Vec<PathBuf> = Vec::new();
+    // [ExtractAudio] Destination: <最终音频文件>（DL-08 仅音频）
+    let mut extracted_paths: Vec<PathBuf> = Vec::new();
 
     let stdout_reader = std::io::BufReader::new(stdout);
     let mut lines = stdout_reader.lines();
@@ -411,6 +429,9 @@ pub fn run_download(
         }
         if let Some(mp) = parse_merger_path(&line) {
             push_unique(&mut merged_paths, mp);
+        }
+        if let Some(xp) = parse_extract_audio_path(&line) {
+            push_unique(&mut extracted_paths, xp);
         }
         if let Some(ap) = parse_already_downloaded_path(&line) {
             push_unique(&mut already_paths, ap);
@@ -427,7 +448,7 @@ pub fn run_download(
     if cancel.load(Ordering::Relaxed) {
         // 取消：清掉本次已经落盘的产物与分片残留。否则"取消"之后输出目录里
         // 仍会多出一个视频，与用户对"取消"的预期不符。
-        cleanup_cancelled_outputs(&dest_paths, &merged_paths, started);
+        cleanup_cancelled_outputs(&extracted_paths, &dest_paths, &merged_paths, started);
         return Err(CoreError::Cancelled);
     }
     if !status.success() {
@@ -437,18 +458,18 @@ pub fn run_download(
             code: status.code(),
             stderr: err,
         });
-    }
-    let _ = stderr;
+    }
     // 产物收敛：
-    // 1) 合并产物行（DASH 下载的最终文件只出现在这里）→ Destination（未合并的单流）
-    //    → "已下载过"行；
+    // 1) ExtractAudio（仅音频最终产物）→ 合并产物行（DASH 下载的最终文件只出现在
+    //    这里）→ Destination（未合并的单流/中间流）→ "已下载过"行；
     // 2) 这些路径都来自 yt-dlp 自己的输出，`--no-overwrites` 保证它不会去动既有文件，
     //    因此"存在即本次产物"（不叠加 mtime 判断：FAT/exFAT 时间戳粒度 2s 会误杀）；
     // 3) 仅当上面一条路径都没解析到时才做目录扫描兜底，且只认 since 之后新增的**最新一个**
-    //    —— 绝不返回目录里用户原有的视频（旧实现返回全部并取最旧的，会覆盖用户文件）。
+    //    —— 绝不返回目录里用户原有的媒体文件（旧实现返回全部并取最旧的，会覆盖用户文件）。
     let mut output_paths: Vec<PathBuf> = Vec::new();
-    for path in merged_paths
+    for path in extracted_paths
         .iter()
+        .chain(merged_paths.iter())
         .chain(dest_paths.iter())
         .chain(already_paths.iter())
     {
@@ -510,9 +531,11 @@ pub fn post_process(
         .map_err(|e| CoreError::Io(std::io::Error::other(format!("产物解析失败：{}", e))))?;
     let meta = &probe.meta;
 
+    // 画质上限按**短边**（§6 max_h 语义；竖屏源依赖 width 采集，MD-02/P0-2），
+    // 缩放表达式用旋转不变量 min(iw,ih)（与 TC-05 同源），竖屏源不再被砍短边
     let need_downscale = meta
-        .height
-        .map(|h| h > cfg.max_h && cfg.max_h > 0)
+        .short_edge()
+        .map(|s| s > cfg.max_h && cfg.max_h > 0)
         .unwrap_or(false);
     let need_gain = general.normalize_audio
         && meta
@@ -526,9 +549,12 @@ pub fn post_process(
     }
 
     let out = input.with_extension("processed.mp4");
-    // 宽用 -2（自动偶数）；高度按上限裁剪且不放大（IH 小于上限时保持原样）
+    // 宽高各自取偶（trunc */2*2）；短边超上限时等比缩小且不放大
     let vf = if need_downscale {
-        Some(format!("scale=-2:'min(ih,{})'", cfg.max_h))
+        Some(format!(
+            "scale='trunc(iw*min(1,{}/min(iw,ih))/2)*2':'trunc(ih*min(1,{}/min(iw,ih))/2)*2'",
+            cfg.max_h, cfg.max_h
+        ))
     } else {
         None
     };
@@ -700,13 +726,18 @@ fn read_stderr_opt(mut stderr: Option<std::process::ChildStderr>) -> String {
 }
 
 /// 是否视频扩展名。
-pub fn is_video_file(p: &Path) -> bool {
+/// 媒体文件扩展名判定（视频 + 音频）：产物定位与目录扫描共用同一份口径，
+/// 避免"拖入单个 mp3 能加、含 mp3 的目录加不进"的三处口径漂移。
+pub fn is_media_file(p: &Path) -> bool {
     matches!(
         p.extension()
             .and_then(|e| e.to_str())
             .map(|e| e.to_lowercase())
             .as_deref(),
-        Some("mp4" | "mkv" | "mov" | "webm" | "avi" | "flv" | "ts" | "m4v")
+        Some(
+            "mp4" | "mkv" | "mov" | "webm" | "avi" | "flv" | "ts" | "m4v"
+                | "mp3" | "m4a" | "aac" | "flac" | "opus" | "wav" | "ogg"
+        )
     )
 }
 
@@ -936,10 +967,23 @@ mod tests {
     }
 
     #[test]
-    fn is_video_file_detects_exts() {
-        assert!(is_video_file(Path::new("a.MP4")));
-        assert!(is_video_file(Path::new("a.mkv")));
-        assert!(!is_video_file(Path::new("a.jpg")));
-        assert!(!is_video_file(Path::new("a.mp3")));
+    fn is_media_file_detects_exts() {
+        assert!(is_media_file(Path::new("a.MP4")));
+        assert!(is_media_file(Path::new("a.mkv")));
+        assert!(!is_media_file(Path::new("a.jpg")));
+        assert!(is_media_file(Path::new("a.mp3")));
+        assert!(is_media_file(Path::new("a.m4a")));
+        assert!(!is_media_file(Path::new("a.jpg")));
+    }
+
+    #[test]
+    fn parse_extract_audio_destination() {
+        let p = parse_extract_audio_path(
+            "[ExtractAudio] Destination: D:/videos/测试音频.mp3",
+        )
+        .unwrap();
+        assert_eq!(p, PathBuf::from("D:/videos/测试音频.mp3"));
+        assert_eq!(parse_extract_audio_path("[ExtractAudio] Destination: "), None);
+        assert_eq!(parse_extract_audio_path("[download] 1.0% of 1MiB"), None);
     }
 }

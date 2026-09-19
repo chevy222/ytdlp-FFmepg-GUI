@@ -295,6 +295,14 @@ fn update_item(app: &AppHandle, id: &str, f: impl FnOnce(&mut MediaItem)) -> Opt
     Some(item)
 }
 
+/// 状态迁移收口（P1-1）：update_item 闭包内一律走 transition_in——
+/// 白名单之外的迁移被拒绝并保留原状态，保证需求 §9 的状态机白名单真正有约束力。
+fn transition_in(it: &mut MediaItem, to: Status) {
+    if transition(it.status, to).is_ok() {
+        it.status = to;
+    }
+}
+
 /// 记录失败日志：多行错误信息拆成逐条（单条塞多行在 UI 上易被截断观感），
 /// 首行带前缀，其余行原样追加。
 fn log_error_lines(app: &AppHandle, id: &str, prefix: &str, e: &CoreError) {
@@ -331,6 +339,11 @@ pub fn add_url(app: AppHandle, urls: Vec<String>) -> CmdResult<()> {
     for raw in urls {
         let url = clean_url(&raw);
         if url.is_empty() {
+            continue;
+        }
+        // DL-01：只接受 http(s):// —— UI 与 CLI 两条入口在此共用同一校验，
+        // 否则 CLI 裸参数会把本地文件名当 URL 入列
+        if !url.starts_with("http://") && !url.starts_with("https://") {
             continue;
         }
         let item = MediaItem::from_url(url);
@@ -390,7 +403,7 @@ fn scan_dir(dir: &Path, recursive: bool, out: &mut Vec<PathBuf>) {
             if recursive {
                 scan_dir(&p, true, out);
             }
-        } else if download::is_video_file(&p) {
+        } else if download::is_media_file(&p) {
             out.push(p);
         }
     }
@@ -441,7 +454,6 @@ fn run_probe(app: AppHandle, id: String) {
                 meta: mp.meta,
                 site: Some("本地文件".into()),
                 host: None,
-                needs_login: false,
                 is_playlist: false,
                 playlist_count: None,
                 thumbnail_url: None,
@@ -458,7 +470,7 @@ fn run_probe(app: AppHandle, id: String) {
                 if p.host.is_some() {
                     it.host = p.host.clone();
                 }
-                it.status = Status::Ready;
+                transition_in(it, Status::Ready);
                 it.percent = 0.0;
                 it.error = None;
                 it.push_log("解析完成，已就绪".to_string());
@@ -518,7 +530,7 @@ fn run_probe(app: AppHandle, id: String) {
                 Status::Failed
             };
             update_item(&app, &id, |it| {
-                it.status = status;
+                transition_in(it, status);
                 it.error = Some(f.to_string());
                 it.push_log(format!("解析失败：{}", f));
             });
@@ -697,7 +709,7 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
     } else if let Some(path) = &first {
         log_item(&app, &id, "下载完成，开始后处理…");
         update_item(&app, &id, |it| {
-            it.status = Status::PostProcessing;
+            transition_in(it, Status::PostProcessing);
         });
         let app2 = app.clone();
         let cfg2 = cfg.clone();
@@ -763,7 +775,7 @@ fn finish_download(
         }
     };
     update_item(app, id, |it| {
-        it.status = final_status;
+        transition_in(it, final_status);
         it.percent = if final_status == Status::Done {
             100.0
         } else {
@@ -1056,7 +1068,7 @@ fn run_merge_task(app: AppHandle, id: String) {
         }
         for jid in &job.ids {
             update_item(&app, jid, |it| {
-                it.status = Status::Failed;
+                transition_in(it, Status::Failed);
                 it.error = Some("合并输入不足（需要至少 2 个本地文件）".into());
             });
         }
@@ -1111,7 +1123,7 @@ fn finish_merge(
         let err = err_text.clone();
         let pct = final_status == Status::Done;
         update_item(app, jid, |it| {
-            it.status = orig;
+            transition_in(it, orig);
             if is_anchor && pct {
                 it.percent = 100.0;
             }
@@ -1303,7 +1315,9 @@ fn expand_playlist(
 fn run_transcode_task(app: AppHandle, id: String) {
     let state = app.state::<AppState>();
     let cancel = state.register_cancel(&id);
-    let (_input, params, meta) = {
+    // 锁纪律（§11.15）：history 锁内只 clone 条目，config/cli/default_output_dir
+    // 一律出锁后再取（P1-3：持 history 锁期间嵌套取 config/cli 锁会让 update_item 卡顿）
+    let (item, path) = {
         let hist = state.history.lock().unwrap();
         let item = match hist.get(&id) {
             Some(i) => i.clone(),
@@ -1319,9 +1333,8 @@ fn run_transcode_task(app: AppHandle, id: String) {
             None => {
                 // 无本地文件（start_transcode 已校验过，此处为兜底）：
                 // 出锁后判失败并释放，不能把条目永远留在 Transcoding 状态
-                drop(hist);
                 update_item(&app, &id, |it| {
-                    it.status = Status::Failed;
+                    transition_in(it, Status::Failed);
                     it.error = Some("无本地输入文件".into());
                 });
                 state.cancels.lock().unwrap().remove(&id);
@@ -1330,41 +1343,43 @@ fn run_transcode_task(app: AppHandle, id: String) {
                 return;
             }
         };
-        let cfg = state.config.lock().unwrap().clone();
-        let out_dir = default_output_dir(&state, &item);
-        // 产物命名：条目标题是 URL（探测没拿到真标题）或为空时，退回输入文件名——
-        // 否则标题经 sanitize 后 "https___www.youtube.com_watch_v=xxx.mp4" 就是输出名
-        let title = {
-            let t = item.title.trim();
-            let is_url = t.starts_with("http://") || t.starts_with("https://") || t.contains("://");
-            if t.is_empty() || is_url {
-                std::path::Path::new(&path)
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(str::to_string)
-                    .unwrap_or_else(|| t.to_string())
-            } else {
-                t.to_string()
-            }
-        };
-        let params = TranscodeParams {
-            input: path.clone(),
-            out_dir,
-            title,
-            filename_template: cfg.download.filename_template.clone(),
-            container: "mp4".into(),
-            encoder_mode: cfg.transcode.force_encoder_mode.clone(),
-            low_power: cfg.transcode.low_power,
-            max_w: cfg.transcode.max_w,
-            max_h: cfg.transcode.max_h,
-            brcap_kbps: cfg.transcode.brcap_kbps,
-            normalize_audio: cfg.general.normalize_audio,
-            max_gain_db: cfg.general.max_gain_db,
-            rot_angle: item.rot_angle,
-            keep_cover: cfg.transcode.keep_cover,
-            collision_policy: cfg.general.collision_policy.clone(),
-        };
-        (path, params, item.meta.clone())
+        (item, path)
+    };
+    let cfg = state.config.lock().unwrap().clone();
+    let out_dir = default_output_dir(&state, &item);
+    // 产物命名：条目标题是 URL（探测没拿到真标题）或为空时，退回输入文件名——
+    // 否则标题经 sanitize 后 "https___www.youtube.com_watch_v=xxx.mp4" 就是输出名
+    let title = {
+        let t = item.title.trim();
+        let is_url = t.starts_with("http://") || t.starts_with("https://") || t.contains("://");
+        if t.is_empty() || is_url {
+            std::path::Path::new(&path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| t.to_string())
+        } else {
+            t.to_string()
+        }
+    };
+    let meta = item.meta.clone();
+    let params = TranscodeParams {
+        input: path.clone(),
+        out_dir,
+        title,
+        filename_template: cfg.download.filename_template.clone(),
+        container: "mp4".into(),
+        encoder_mode: cfg.transcode.force_encoder_mode.clone(),
+        low_power: cfg.transcode.low_power,
+        max_w: cfg.transcode.max_w,
+        max_h: cfg.transcode.max_h,
+        brcap_kbps: cfg.transcode.brcap_kbps,
+        br_default_kbps: cfg.transcode.br_default_kbps,
+        normalize_audio: cfg.general.normalize_audio,
+        max_gain_db: cfg.general.max_gain_db,
+        rot_angle: item.rot_angle,
+        keep_cover: cfg.transcode.keep_cover,
+        collision_policy: cfg.general.collision_policy.clone(),
     };
     let app2 = app.clone();
     let id2 = id.clone();
@@ -1401,7 +1416,7 @@ fn finish_transcode(app: &AppHandle, id: &str, result: Result<std::path::PathBuf
         }
     };
     update_item(app, id, |it| {
-        it.status = orig_status;
+        transition_in(it, orig_status);
         it.percent = if final_status == Status::Done {
             100.0
         } else {
@@ -1492,7 +1507,7 @@ pub fn cancel_item(app: AppHandle, id: String) -> CmdResult<()> {
     };
     if removed {
         update_item(&app, &id, |it| {
-            it.status = Status::Canceled;
+            transition_in(it, Status::Canceled);
             it.push_log("已取消（队列中移除）".to_string());
         });
         persist(&app);
@@ -1502,7 +1517,7 @@ pub fn cancel_item(app: AppHandle, id: String) -> CmdResult<()> {
     if let Some(flag) = state.cancel_flag(&id) {
         flag.store(true, Ordering::Relaxed);
         update_item(&app, &id, |it| {
-            it.status = Status::Canceled;
+            transition_in(it, Status::Canceled);
             it.push_log("正在取消…".to_string());
         });
         persist(&app);

@@ -136,13 +136,6 @@ impl ToolResolver {
         hide_console(&mut cmd);
         Ok(cmd)
     }
-
-    /// 全部工具是否可用（依赖自检，§3.8）。
-    pub fn all_available(&self) -> bool {
-        [Tool::YtDlp, Tool::Ffmpeg, Tool::Ffprobe]
-            .iter()
-            .all(|t| self.resolve(*t).is_ok())
-    }
 }
 
 /// 在系统 PATH 中查找可执行文件。
@@ -210,11 +203,6 @@ impl ChildGuard {
             return Err(CoreError::Cancelled);
         }
         Ok(out)
-    }
-
-    /// 获取子进程 id（供 taskkill 使用）。
-    pub fn pid(&self) -> Option<u32> {
-        self.child.as_ref().map(|c| c.id())
     }
 
     /// 取 stdout（调用后由调用方接管）。
@@ -415,17 +403,6 @@ pub fn decode_text(bytes: &[u8]) -> String {
     }
 }
 
-/// 校验指定路径可执行（依赖路径输入框失焦校验）。
-pub fn validate_tool_path(path: &Path, _tool: Tool) -> crate::Result<()> {
-    if !path.is_file() {
-        return Err(CoreError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("{} 不存在", path.display()),
-        )));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -604,12 +581,6 @@ mod tests {
         if let Some(v) = tool_version(&r, Tool::Ffmpeg) {
             assert!(!v.is_empty());
         }
-    }
-
-    #[test]
-    fn validate_tool_path_rejects_missing() {
-        let root = tempdir().unwrap();
-        assert!(validate_tool_path(&root.path().join("nope"), Tool::Ffmpeg).is_err());
     }
 
     #[test]

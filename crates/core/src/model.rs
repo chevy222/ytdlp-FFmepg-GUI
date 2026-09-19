@@ -106,11 +106,6 @@ pub enum ItemKind {
     MergeOut,
 }
 
-impl ItemKind {
-    pub fn is_download_source(self) -> bool {
-        matches!(self, Self::UrlTask)
-    }
-}
 
 /// 音频音量探测结果（volumedetect，供转码增益决策，§MD-02/MD-06/TC-07）。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -485,6 +480,7 @@ pub fn transition(from: Status, to: Status) -> Result<Status, crate::CoreError> 
         | (Status::Downloading, Status::Failed)
         | (Status::Downloading, Status::Canceled)
         | (Status::Downloading, Status::NeedLogin)
+        | (Status::Downloading, Status::Done)
         | (Status::PostProcessing, Status::Done)
         | (Status::PostProcessing, Status::Failed)
         | (Status::PostProcessing, Status::Canceled)
@@ -835,11 +831,6 @@ mod tests {
         assert_eq!(back.meta.audio_volume.max_volume_db, Some(-8.2));
     }
 
-    #[test]
-    fn item_kind_download_source() {
-        assert!(ItemKind::UrlTask.is_download_source());
-        assert!(!ItemKind::LocalFile.is_download_source());
-        assert!(!ItemKind::TranscodeOut.is_download_source());
     }
 
     #[test]

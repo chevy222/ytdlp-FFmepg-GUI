@@ -191,8 +191,13 @@ fn transcode_segment(
         enc_args.push("-tag:v".into());
         enc_args.push("hvc1".into());
     }
+    // 目标高度取偶（奇数高度 + 非偶对齐会让 libx265 报 chroma subsampling 错误）
+    let target_h = if target_h > 0 { target_h & !1 } else { 1080 };
     let mut args: Vec<String> = vec![
         "-hide_banner".into(),
+        // 旋转由条目 rot_angle 单一来源（§11.13）：禁用 ffmpeg autorotate，
+        // 避免源文件 rotate 标签叠加手动旋转造成双重旋转
+        "-noautorotate".into(),
         "-i".into(),
         input.to_string_lossy().into_owned(),
         "-map".into(),
@@ -200,9 +205,10 @@ fn transcode_segment(
         "-map".into(),
         "0:a?".into(),
         "-vf".into(),
+        // 偶数对齐：宽度 -2 自动取偶，高度 min() 封顶 + force_divisible_by=2（§11.5）
         format!(
-            "scale=-2:{}:force_original_aspect_ratio=decrease",
-            if target_h > 0 { target_h } else { 1080 }
+            "scale=-2:'min(ih,{})':force_original_aspect_ratio=decrease:force_divisible_by=2",
+            target_h
         ),
         "-c:v".into(),
         enc,
@@ -216,6 +222,9 @@ fn transcode_segment(
     args.push("2".into());
     args.push("-map_metadata".into());
     args.push("0".into());
+    // 清掉源 rotate 标签（-noautorotate 已禁自动旋转，标签残留会让播放器再转一次）
+    args.push("-metadata:s:v:0".into());
+    args.push("rotate=0".into());
     args.push("-movflags".into());
     args.push("+faststart".into());
     args.push("-y".into());

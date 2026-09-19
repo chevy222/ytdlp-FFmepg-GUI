@@ -35,6 +35,8 @@ pub struct TranscodeParams {
     pub max_w: u32,
     pub max_h: u32,
     pub brcap_kbps: Option<u32>,
+    /// 兜底码率 kbps：封顶留空时的 maxrate 兜底（0 = 不兜底）
+    pub br_default_kbps: u32,
     pub normalize_audio: bool,
     pub max_gain_db: f32,
     pub rot_angle: RotAngle,
@@ -265,14 +267,23 @@ pub fn build_args(
         enc_args.push("-tag:v:0".into());
         enc_args.push("hvc1".into());
     }
-    // 码率封顶（kbps；None 不限制）
-    if let Some(br) = params.brcap_kbps {
-        if br > 0 {
-            enc_args.push("-maxrate".into());
-            enc_args.push(format!("{}k", br));
-            enc_args.push("-bufsize".into());
-            enc_args.push(format!("{}k", br * 2));
-        }
+    // 码率封顶（kbps）；封顶留空时用兜底码率作为 maxrate（兜底也为 0 则不限）
+    let cap = params
+        .brcap_kbps
+        .filter(|b| *b > 0)
+        .or_else(|| {
+            let d = params.br_default_kbps;
+            if d > 0 {
+                Some(d)
+            } else {
+                None
+            }
+        });
+    if let Some(br) = cap {
+        enc_args.push("-maxrate".into());
+        enc_args.push(format!("{}k", br));
+        enc_args.push("-bufsize".into());
+        enc_args.push(format!("{}k", br * 2));
     }
     // 音频增益（normalize_audio + 解析音量；接近满度/无音量不处理）
     let need_gain = params.normalize_audio
@@ -306,6 +317,9 @@ pub fn build_args(
 
     let mut args: Vec<String> = vec![
         "-hide_banner".into(),
+        // 旋转由条目 rot_angle 单一来源（§11.13）：禁用 autorotate，
+        // 避免源 rotate 标签叠加手动旋转造成双重旋转；产物 rotate 标签一并清除
+        "-noautorotate".into(),
         "-i".into(),
         params.input.to_string_lossy().into_owned(),
     ];
@@ -392,6 +406,9 @@ pub fn build_args(
     }
     args.push("-map_metadata".into());
     args.push("0".into());
+    // 配合 -noautorotate：清除源 rotate 标签，防止播放器再按标签自动转一次
+    args.push("-metadata:s:v:0".into());
+    args.push("rotate=0".into());
     match params.container.as_str() {
         "mkv" => args.push("-f".into()),
         _ => {
@@ -572,10 +589,6 @@ fn read_stderr(mut stderr: std::process::ChildStderr) -> String {
     }
 }
 
-/// 判断是否本地可转码输入（文件存在）。
-pub fn is_transcode_input(path: &Path) -> bool {
-    path.is_file()
-}
 
 #[cfg(test)]
 mod tests {
@@ -626,6 +639,7 @@ mod tests {
             max_w: 0,
             max_h: 0,
             brcap_kbps: None,
+            br_default_kbps: 0,
             normalize_audio: false,
             max_gain_db: 24.0,
             rot_angle: RotAngle::ZERO,
@@ -667,6 +681,7 @@ mod tests {
             max_w: 0,
             max_h: 0,
             brcap_kbps: None,
+            br_default_kbps: 0,
             normalize_audio: false,
             max_gain_db: 24.0,
             rot_angle: RotAngle::ZERO,
