@@ -548,8 +548,8 @@ fn run_probe(app: AppHandle, id: String) {
             });
         }
     }
-    // 解析阶段的临时文件（导出的 Cookie）随任务私有目录一并清掉，避免明文长期驻留 temp/
-    cleanup_on_cancel(&state.paths.task_temp_dir(&id), netscape.as_deref());
+    // 解析阶段临时目录清理（cookie 文件现在持久存在 config/cookies/ 下，不删）
+    let _ = std::fs::remove_dir_all(&state.paths.task_temp_dir(&id));
     persist(&app);
 }
 

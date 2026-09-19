@@ -242,6 +242,15 @@ pub fn cookie_candidates(host: &str) -> Vec<String> {
         "twitter.com" | "www.twitter.com" => push_unique(&mut out, "x.com".into()),
         _ => {}
     }
+    // YouTube ↔ youtu.be 姊妹域名互退
+    match h.as_str() {
+        "youtube.com" | "www.youtube.com" => push_unique(&mut out, "youtu.be".into()),
+        "youtu.be" => {
+            push_unique(&mut out, "youtube.com".into());
+            push_unique(&mut out, "www.youtube.com".into());
+        }
+        _ => {}
+    }
     out
 }
 
