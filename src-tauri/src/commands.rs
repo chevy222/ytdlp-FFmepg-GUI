@@ -645,15 +645,20 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
         &cancel,
         move |p| {
             update_item(&app2, &id2, |it| {
-                it.percent = p.percent;
-                if let Some(s) = p.speed {
-                    it.speed = Some(s);
+                // Destination 行（切换到下一条流，percent 恒为 0）只更新目标文件名，
+                // 不把进度打回 0：DASH 双流下载视频 100% → 音频 Destination 会把
+                // percent 重置，快速下载看起来就像"一直 0%"
+                if p.file.is_some() {
+                    it.file = p.file.clone();
                 }
-                if let Some(e) = p.eta {
-                    it.eta = Some(e);
-                }
-                if let Some(f) = p.file {
-                    it.file = Some(f);
+                if p.file.is_none() || p.percent > 0.0 {
+                    it.percent = p.percent;
+                    if let Some(s) = p.speed {
+                        it.speed = Some(s);
+                    }
+                    if let Some(e) = p.eta {
+                        it.eta = Some(e);
+                    }
                 }
             });
         },
