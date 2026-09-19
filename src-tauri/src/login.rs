@@ -246,6 +246,8 @@ fn login_inject_script() -> String {
     bar.appendChild(btn);
     bar.appendChild(hint);
     bar.appendChild(barClose);
+    // 挂载到页面：缺失此句时整个顶部条（含"登录完成"）都不会显示
+    root.appendChild(bar);
   }
   ensure();
   setInterval(ensure, 800);
@@ -317,6 +319,8 @@ mod tests {
         assert!(s.contains("Escape"));
         // 右上角悬浮 × 已删：提示条里已有"关闭"，不再注入第二个关闭按钮
         assert!(!s.contains("closeBtn"));
+        // 顶部条必须真正挂载到页面（删 × 时误删挂载语句的历史回归）
+        assert!(s.contains("root.appendChild(bar)"));
         // 空白检测判据不能再依赖 body.childElementCount ——
         // 脚本自己会往 body 插元素，该条件恒为假（旧实现的 bug）
         assert!(!s.contains("childElementCount === 0"));

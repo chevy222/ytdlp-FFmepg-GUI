@@ -14,7 +14,7 @@ use crate::config::NetworkConfig;
 use crate::exec::{decode_text, ChildGuard, Tool, ToolResolver};
 use crate::model::{AudioVolume, DownloadFormat, MediaMeta};
 use crate::Result;
-
+
 
 /// 解析失败分类（MD-05）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,7 +36,7 @@ pub enum ProbeErrorKind {
 pub struct UrlProbe {
     pub meta: MediaMeta,
     pub site: Option<String>,
-    pub host: Option<String>,
+    pub host: Option<String>,
     /// 是否合集/多 P
     pub is_playlist: bool,
     pub playlist_count: Option<u32>,
@@ -59,6 +59,11 @@ pub struct PlaylistEntry {
 
 /// 组装 yt-dlp 公共参数（`-J` 家族共用）：extra 前缀 + js 运行时 + cookies + 代理 + URL。
 /// 命令行展示（`display_command`）与 Command 构造共用这一份，保证日志与实际执行一致。
+///
+/// js 运行时说明（§3.6/DL-14）：yt-dlp 的 YouTube 组件需要 JS 运行时，默认
+/// **只认 PATH 里的 deno**；依赖配置/`tools\` 托管目录里的 deno 必须显式传给它
+/// （`--js-runtimes deno:<路径>`），否则即使依赖自检通过，YouTube 仍会因缺
+/// JS 运行时失败。
 fn ytdlp_args(
     resolver: &ToolResolver,
     url: &str,
@@ -155,11 +160,6 @@ pub struct ProbeFailure {
     pub message: String,
 }
 
-/// 追加 `--js-runtimes deno:<path>`（§3.6 依赖）。
-///
-/// yt-dlp 的 YouTube 组件需要 JS 运行时，默认**只认 PATH 里的 deno**；
-/// 依赖配置/`tools\` 托管目录里的 deno 必须显式传给它，否则即使依赖自检通过，
-/// YouTube 仍会因缺 JS 运行时失败。
 impl std::fmt::Display for ProbeFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.message)
@@ -383,7 +383,7 @@ pub fn parse_ytdlp_json(text: &str) -> Result<UrlProbe> {
     Ok(UrlProbe {
         meta,
         site,
-        host,
+        host,
         is_playlist,
         playlist_count,
         thumbnail_url: thumbnail,
@@ -557,7 +557,7 @@ fn classify_ytdlp_error(stderr: &str) -> ProbeFailure {
         message: stderr.lines().last().unwrap_or("未知错误").to_string(),
     }
 }
-
+
 }
 
 #[cfg(test)]

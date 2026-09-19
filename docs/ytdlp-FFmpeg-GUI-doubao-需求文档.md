@@ -64,7 +64,7 @@
 | DL-11 | 并发分片 `-N <fragments>`（默认 4）、`--retries <retries>`（默认 3）、`--retry-sleep 3` | `download.rs::build_args` |
 | DL-12 | 时间范围下载：条目 `sections` 设置后传 `--download-sections *<start>-<end>`（HH:MM:SS，前端校验格式） | `commands.rs::set_sections`、`download.rs::build_args` |
 | DL-13 | 产物定位：解析 yt-dlp 输出中的 `[Merger] Merging formats into "<path>"`、`[download] Destination:`、`[download] <file> has already been downloaded` 三类行，"存在即本次产物"；一条都没解析到时才扫描输出目录，且只取**本次启动后新增的最新一个**视频文件；仍为空则判失败（不触碰目录内既有文件）。若本次只有"已下载过"的既有文件（`preexisting`），跳过后处理 | `download.rs::parse_merger_path` / `parse_already_downloaded_path` / `newest_media_since` / `run_download` |
-| DL-14 | JS 运行时：解析与下载都把托管或配置的 deno 显式传给 yt-dlp（`--js-runtimes deno:<路径>`）；未配置时交给 yt-dlp 自行探测 PATH | `probe.rs::push_js_runtime`、`download.rs::build_args` |
+| DL-14 | JS 运行时：解析与下载都把托管或配置的 deno 显式传给 yt-dlp（`--js-runtimes deno:<路径>`）；未配置时交给 yt-dlp 自行探测 PATH | `probe.rs::ytdlp_args`、`download.rs::build_args` |
 
 ## 4. 转码能力（TC）
 
