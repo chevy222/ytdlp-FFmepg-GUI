@@ -176,9 +176,9 @@ pub fn probe_url(
     mut on_log: impl FnMut(String),
 ) -> std::result::Result<UrlProbe, ProbeFailure> {
     let extra: &[&str] = if playlist {
-        &["-J", "--no-warnings", "--yes-playlist"]
+        &["-J", "--no-warnings", "--yes-playlist", "--socket-timeout", "60"]
     } else {
-        &["-J", "--no-warnings", "--no-playlist"]
+        &["-J", "--no-warnings", "--no-playlist", "--socket-timeout", "60"]
     };
     let args = ytdlp_args(resolver, url, cookies_file, network, extra);
     on_log(crate::exec::display_command("yt-dlp", &args));
@@ -187,24 +187,43 @@ pub fn probe_url(
         message: e.to_string(),
     })?;
     cmd.args(&args);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    // stdout/stderr 重定向到临时文件（不用管道）：
+    // GUI 子进程管道缓冲区有限（Windows 默认 64KB），yt-dlp 输出大量 JSON 元数据时
+    // 会阻塞在 write(stdout)，导致无法及时读取网络数据而超时。手动 CMD 输出直接到终端不会阻塞。
+    let tmp_dir = std::env::temp_dir();
+    let stdout_file = tmp_dir.join(format!("ytdlp-probe-out-{}.json", std::process::id()));
+    let stderr_file = tmp_dir.join(format!("ytdlp-probe-err-{}.log", std::process::id()));
+    let out_f = std::fs::File::create(&stdout_file).map_err(|e| ProbeFailure {
+        kind: ProbeErrorKind::Failed,
+        message: format!("创建临时输出文件失败：{e}"),
+    })?;
+    let err_f = std::fs::File::create(&stderr_file).map_err(|e| ProbeFailure {
+        kind: ProbeErrorKind::Failed,
+        message: format!("创建临时错误文件失败：{e}"),
+    })?;
+    cmd.stdout(Stdio::from(out_f));
+    cmd.stderr(Stdio::from(err_f));
 
-    let guard = ChildGuard::spawn(&mut cmd).map_err(|e| ProbeFailure {
+    let mut guard = ChildGuard::spawn(&mut cmd).map_err(|e| ProbeFailure {
         kind: ProbeErrorKind::Failed,
         message: format!("启动 yt-dlp 失败：{}", e),
     })?;
-    let output = guard.wait_with_output().map_err(|e| ProbeFailure {
+    let status = guard.wait().map_err(|e| ProbeFailure {
         kind: ProbeErrorKind::Failed,
-        message: format!("yt-dlp 退出异常：{}", e),
+        message: format!("yt-dlp 退出异常：{e}"),
     })?;
-    if !output.status.success() {
-        let stderr = decode_text(&output.stderr);
+    let stdout_bytes = std::fs::read(&stdout_file).unwrap_or_default();
+    let stderr_bytes = std::fs::read(&stderr_file).unwrap_or_default();
+    let _ = std::fs::remove_file(&stdout_file);
+    let _ = std::fs::remove_file(&stderr_file);
+    if !status.success() {
+        let stderr = decode_text(&stderr_bytes);
         return Err(classify_ytdlp_error(stderr.trim()));
     }
-    let text = decode_text(&output.stdout);
+    let text = decode_text(&stdout_bytes);
     parse_ytdlp_json(&text).map_err(|e| ProbeFailure {
         kind: ProbeErrorKind::Failed,
-        message: format!("解析 yt-dlp 输出失败：{}", e),
+        message: format!("解析 yt-dlp 输出失败：{e}"),
     })
 }
 
