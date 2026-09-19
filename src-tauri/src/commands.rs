@@ -298,7 +298,8 @@ fn update_item(app: &AppHandle, id: &str, f: impl FnOnce(&mut MediaItem)) -> Opt
 /// 记录失败日志：多行错误信息拆成逐条（单条塞多行在 UI 上易被截断观感），
 /// 首行带前缀，其余行原样追加。
 fn log_error_lines(app: &AppHandle, id: &str, prefix: &str, e: &CoreError) {
-    let mut lines = e.to_string().lines();
+    let error_text = e.to_string();
+    let mut lines = error_text.lines();
     if let Some(first) = lines.next() {
         log_item(app, id, format!("{prefix}{first}"));
     }
