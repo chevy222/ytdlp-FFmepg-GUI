@@ -1280,11 +1280,15 @@ pub fn start_transcode(app: AppHandle, ids: Vec<String>) -> CmdResult<()> {
             match transition(item.status, Status::Transcoding) {
                 Ok(to) => {
                     // 进入新任务前进度归零：否则上一轮下载/转码的 100% 会一直挂在进度列
-                    hist.upsert(MediaItem {
+                    let updated = MediaItem {
                         status: to,
                         percent: 0.0,
                         ..item
-                    });
+                    };
+                    hist.upsert(updated.clone());
+                    drop(hist);
+                    let _ = app.emit("item:update", &updated);
+                    hist = state.history.lock().unwrap();
                     to_run.push(id.clone());
                 }
                 Err(e) => skipped.push((id.clone(), format!("转码被跳过：{e}"))),
