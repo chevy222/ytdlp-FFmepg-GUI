@@ -956,6 +956,7 @@ function renderSetPage(){
     h+='<div class="set-hd">内置登录（点站点打开登录窗；登录后点窗内"登录完成"保存 Cookie）</div>'+
       '<div class="set-row"><div class="v grow"><div class="btn-wrap">'+
       LOGIN_SITES.map(x=>'<button class="btn sm" data-login-host="'+x.host+'">'+x.label+'</button>').join('')+
+      '<button class="btn sm" id="btnCustomLogin">自定义…</button>'+
       '</div></div></div>'+
       '<div class="set-hd">站点 Cookie（存储于 &lt;exe 同级&gt;\\config\\cookies\\，按 HOST 分文件，含 HttpOnly）</div>'+
       '<div class="set-row"><div class="v grow"><div class="site-list" id="cookieList"><div class="site-loading">加载中…</div></div></div></div>'+
@@ -1087,6 +1088,15 @@ function bindSetEvents(){
   page.querySelectorAll('[data-login-host]').forEach(b=>b.addEventListener('click',()=>{
     INVOKE('open_login_site',{host:b.dataset.loginHost}).catch(err=>toast(err));
   }));
+  const customLogin=page.querySelector('#btnCustomLogin');
+  if(customLogin)customLogin.addEventListener('click',()=>{
+    const url=prompt('输入要登录的站点 URL（如 https://www.bilibili.com）：');
+    if(!url)return;
+    try{
+      const u=new URL(url);
+      INVOKE('open_login_site',{host:u.hostname}).catch(err=>toast(err));
+    }catch(e){toast('URL 格式不正确');}
+  });
   const clearCache=page.querySelector('[data-act="clear-cache"]');
   if(clearCache)clearCache.addEventListener('click',()=>toast('解析缓存清除（P1 接入）'));
 }
