@@ -144,7 +144,7 @@ pub fn host_from_url(url: &str) -> Option<String> {
 }
 
 /// 文件名安全化（host 中不允许的字符替换）。
-fn sanitize_host(host: &str) -> String {
+pub fn sanitize_host(host: &str) -> String {
     host.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
