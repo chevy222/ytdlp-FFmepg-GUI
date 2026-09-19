@@ -242,18 +242,13 @@ impl DownloadFormat {
 }
 
 impl MediaMeta {
-    /// 分辨率短边：竖屏源（rotate_tag 90°/270°）取 min(宽,高)，其余取 height。
+    /// 分辨率短边：无论横竖屏，都取 min(宽,高)。
     /// 文档 §8 口径"分辨率(4K/2K/xP)"按短边计（§6.2）。
     pub fn short_edge(&self) -> Option<u32> {
         let h = self.height?;
-        let rotated = matches!(
-            self.rotate_tag,
-            Some(90) | Some(-90) | Some(270) | Some(-270)
-        );
-        if rotated {
-            Some(self.width.map(|w| w.min(h)).unwrap_or(h))
-        } else {
-            Some(h)
+        match self.width {
+            Some(w) => Some(w.min(h)),
+            None => Some(h),
         }
     }
 }
