@@ -225,7 +225,7 @@ fn run_piped_progress(
     on_progress: &mut dyn FnMut(f32),
     on_log: &mut dyn FnMut(String),
 ) -> Result<()> {
-    use std::io::{BufRead, Read};
+    use std::io::BufRead;
     use std::process::Stdio;
     // 合并链路的所有 ffmpeg 执行（段转码/拼接/归一化）都走这里：命令行统一入日志
     on_log(crate::exec::display_command("ffmpeg", &args));
@@ -236,7 +236,7 @@ fn run_piped_progress(
     let stdout = guard
         .stdout()
         .ok_or_else(|| CoreError::Io(std::io::Error::other("无法读取 ffmpeg 输出")))?;
-    let stderr = guard
+    let mut stderr = guard
         .stderr()
         .ok_or_else(|| CoreError::Io(std::io::Error::other("无法读取 ffmpeg 错误输出")))?;
     let reader = std::io::BufReader::new(stdout);

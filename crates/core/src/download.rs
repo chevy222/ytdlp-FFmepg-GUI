@@ -404,7 +404,7 @@ pub fn run_download(
     let stdout = guard
         .stdout()
         .ok_or_else(|| CoreError::Io(std::io::Error::other("无法读取 yt-dlp 输出")))?;
-    let stderr = guard
+    let mut stderr = guard
         .stderr()
         .ok_or_else(|| CoreError::Io(std::io::Error::other("无法读取 yt-dlp 错误输出")))?;
 
@@ -669,7 +669,7 @@ pub fn post_process(
     if !status.success() {
         let err = guard
             .stderr()
-            .map(|e| crate::exec::drain_stderr(e))
+            .map(|mut e| crate::exec::drain_stderr(&mut e))
             .unwrap_or_default();
         on_log(format!("后处理失败（保留原文件）：{}", err));
         let _ = std::fs::remove_file(&out);

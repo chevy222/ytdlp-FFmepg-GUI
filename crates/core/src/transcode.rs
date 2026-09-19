@@ -125,14 +125,17 @@ fn id_hint(title: &str) -> String {
     // 本地转码无稳定 ID 字段：用标题长度做短指纹，保证不同文件不互相覆盖
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    _title.hash(&mut h);
+    title.hash(&mut h);
     format!("{:08x}", h.finish() & 0xFFFF_FFFF)
+}
+
+fn sv(v: &[&str]) -> Vec<String> {
+    v.iter().map(|s| s.to_string()).collect()
 }
 
 /// 显式模式的编码器参数表（libx265 / nvenc / amf；auto 由调用方决定语义，P2-7）。
 /// 转码与合并共用，消除两张逐字相同的参数表。
 pub fn explicit_encoder_args(mode: &str) -> (String, Vec<String>) {
-    let sv = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
     match mode {
         "nvenc" => (
             "hevc_nvenc".into(),
@@ -720,7 +723,7 @@ fn run_transcode_once(
     let stdout = guard
         .stdout()
         .ok_or_else(|| CoreError::Io(std::io::Error::other("无法读取 ffmpeg 输出")))?;
-    let stderr = guard
+    let mut stderr = guard
         .stderr()
         .ok_or_else(|| CoreError::Io(std::io::Error::other("无法读取 ffmpeg 错误输出")))?;
 

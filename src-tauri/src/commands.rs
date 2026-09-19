@@ -463,6 +463,7 @@ fn run_probe(app: AppHandle, id: String) {
     match result {
         Ok(p) => {
             let url_src = item.url.is_some();
+            let cover_idx = p.meta.cover_stream_index;
             update_item(&app, &id, |it| {
                 it.meta = p.meta;
                 it.site = p.site.clone();
@@ -485,7 +486,6 @@ fn run_probe(app: AppHandle, id: String) {
                 let thumb_url = p.thumbnail_url.clone();
                 let local_path = item.path.clone();
                 // 本地文件优先取内嵌封面（元数据），与桌面缩略图同源
-                let cover_idx = p.meta.cover_stream_index;
                 let resolver2 = resolver.clone();
                 let proxy2 = network.proxy_url.clone();
                 tauri::async_runtime::spawn(async move {
@@ -503,7 +503,7 @@ fn run_probe(app: AppHandle, id: String) {
                             &resolver2,
                             std::path::Path::new(&p),
                             &dest,
-                            cover_idx,
+                            cover_idx.map(|i| i as usize),
                             &mut |l| log_item(&app2, &id2, l),
                         )
                     } else {
@@ -535,7 +535,8 @@ fn run_probe(app: AppHandle, id: String) {
                 transition_in(it, status);
                 it.error = Some(f.to_string());
                 // 多行错误逐行落日志：单条塞多行在日志弹窗里会被错误截断
-                let mut lines = f.to_string().lines();
+                let s = f.to_string();
+                let mut lines = s.lines();
                 if let Some(first) = lines.next() {
                     it.push_log(format!("解析失败：{first}"));
                 }
@@ -667,6 +668,8 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
     let id2 = id.clone();
     let app3 = app.clone();
     let id3 = id.clone();
+    let app4 = app.clone();
+    let id4 = id.clone();
     // 里程碑诊断：后端确实解析到中间进度的直接证据（进日志弹窗可查，
     // 用于区分"后端没解析到"与"前端没渲染"两类问题）
     let band = std::cell::Cell::new(0u8);
@@ -698,11 +701,15 @@ fn run_download_task(app: AppHandle, id: String, format_id: Option<String>, audi
                 let b = (p.percent / 25.0).floor() as u8;
                 if b > band.get() && b >= 1 {
                     band.set(b);
-                    log_item(&app3, &id3, format!("下载进度 {:.0}%（后端已解析到中间进度）", p.percent));
+                    log_item(
+                        &app3,
+                        &id3,
+                        format!("下载进度 {:.0}%（后端已解析到中间进度）", p.percent),
+                    );
                 }
             }
         },
-        move |l| log_item(&app3, &id3, l),
+        move |l| log_item(&app4, &id4, l),
     );
 
     let mut outcome = match prog_result {
@@ -831,7 +838,7 @@ fn finish_download(
                         &resolver2,
                         std::path::Path::new(&out_path),
                         &dest,
-                        cover_idx,
+                        cover_idx.map(|i| i as usize),
                         &mut |l| log_item(&app2, &id2, l),
                     )
                     .is_ok()
@@ -1174,7 +1181,14 @@ fn finish_merge(
             let cover_idx = prod.meta.cover_stream_index;
             tauri::async_runtime::spawn(async move {
                 let dest = ytdlp_core::thumbs::thumb_path(&cache_dir, &pid);
-                if ytdlp_core::thumbs::ensure_thumb(&resolver2, &out2, &dest, cover_idx, &mut |_| {}).is_ok()
+                if ytdlp_core::thumbs::ensure_thumb(
+                    &resolver2,
+                    &out2,
+                    &dest,
+                    cover_idx.map(|i| i as usize),
+                    &mut |_| {},
+                )
+                .is_ok()
                 {
                     update_item(&app2, &pid, |it| {
                         it.thumb = Some(dest.to_string_lossy().into_owned());
@@ -1442,7 +1456,11 @@ fn run_transcode_task(app: AppHandle, id: String) {
                 let b = (pct / 25.0).floor() as u8;
                 if b > band.get() && b >= 1 {
                     band.set(b);
-                    log_item(&app4, &id4, format!("转码进度 {:.0}%（后端已解析到中间进度）", pct));
+                    log_item(
+                        &app4,
+                        &id4,
+                        format!("转码进度 {:.0}%（后端已解析到中间进度）", pct),
+                    );
                 }
             }
         },
@@ -1503,7 +1521,14 @@ fn finish_transcode(app: &AppHandle, id: &str, result: Result<std::path::PathBuf
             let cover_idx = prod.meta.cover_stream_index;
             tauri::async_runtime::spawn(async move {
                 let dest = ytdlp_core::thumbs::thumb_path(&cache_dir, &pid);
-                if ytdlp_core::thumbs::ensure_thumb(&resolver2, &out2, &dest, cover_idx, &mut |_| {}).is_ok()
+                if ytdlp_core::thumbs::ensure_thumb(
+                    &resolver2,
+                    &out2,
+                    &dest,
+                    cover_idx.map(|i| i as usize),
+                    &mut |_| {},
+                )
+                .is_ok()
                 {
                     update_item(&app2, &pid, |it| {
                         it.thumb = Some(dest.to_string_lossy().into_owned());
