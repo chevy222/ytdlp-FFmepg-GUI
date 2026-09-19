@@ -447,7 +447,7 @@ function qualityLine(m){
   if(m.acodec)p.push(m.acodec);
   if(m.sample_rate)p.push(srLabel(m.sample_rate));
   if(m.abitrate_kbps)p.push(m.abitrate_kbps+'k');
-  if(m.audio_tracks)p.push(m.audio_tracks+'轨');
+  if(m.audio_channels)p.push(m.audio_channels+'声道');
   if(m.audio_volume && m.audio_volume.max_volume_db!=null)p.push(m.audio_volume.max_volume_db.toFixed(1)+'dB');
   if(m.duration_secs!=null){const d=Math.floor(m.duration_secs);p.push(String(Math.floor(d/60)).padStart(2,'0')+':'+String(d%60).padStart(2,'0'));}
   if(m.size_bytes!=null)p.push(humanSize(m.size_bytes));
@@ -1125,6 +1125,11 @@ async function init(){
       cancelBtn.textContent='取消 '+phase+' '+pct+'%';
       cancelBtn.title=phase+' '+pct+'%';
     });
+    // 兜底轮询：活动任务期间每 1.5s 对账一次，事件偶发丢失也不会让进度卡死
+    setInterval(()=>{
+      const active=S.items.some(i=>['Downloading','PostProcessing','Transcoding','Merging','Probing'].includes(i.status));
+      if(active)INVOKE('list_items').then(list=>{S.items=list;render();}).catch(()=>{});
+    },1500);
   }catch(err){ console.error(err); toast('初始化失败：'+err); }
 }
 init();

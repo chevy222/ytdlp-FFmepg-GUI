@@ -943,7 +943,8 @@ pub fn start_merge(
             }
             match transition(item.status, Status::Merging) {
                 Ok(to) => {
-                    hist.upsert(MediaItem { status: to, ..item });
+                    // 进入新任务前进度归零：否则上一轮下载/转码的 100% 会一直挂在进度列
+                    hist.upsert(MediaItem { status: to, percent: 0.0, ..item });
                     jobs.push(id.clone());
                 }
                 Err(e) => skipped.push((id.clone(), format!("合并被跳过：{e}"))),
@@ -1145,6 +1146,24 @@ fn finish_merge(
         prod.meta = meta;
         prod.updated_at = now_str();
         state.history.lock().unwrap().upsert(prod.clone());
+        // 产物缩略图：从最终产物抽帧（与下载完成兜底同链路）
+        {
+            let app2 = app.clone();
+            let pid = prod.id.clone();
+            let cache_dir = state.paths.cache_dir();
+            let resolver2 = state.resolver();
+            let out2 = out.clone();
+            tauri::async_runtime::spawn(async move {
+                let dest = ytdlp_core::thumbs::thumb_path(&cache_dir, &pid);
+                if ytdlp_core::thumbs::extract_thumb(&resolver2, &out2, &dest, &mut |_| {})
+                    .is_ok()
+                {
+                    update_item(&app2, &pid, |it| {
+                        it.thumb = Some(dest.to_string_lossy().into_owned());
+                    });
+                }
+            });
+        }
         let _ = app.emit("item:ready", serde_json::json!({ "id": prod.id }));
         let _ = app.emit("list:changed", ());
     }
@@ -1234,7 +1253,8 @@ pub fn start_transcode(app: AppHandle, ids: Vec<String>) -> CmdResult<()> {
             }
             match transition(item.status, Status::Transcoding) {
                 Ok(to) => {
-                    hist.upsert(MediaItem { status: to, ..item });
+                    // 进入新任务前进度归零：否则上一轮下载/转码的 100% 会一直挂在进度列
+                    hist.upsert(MediaItem { status: to, percent: 0.0, ..item });
                     to_run.push(id.clone());
                 }
                 Err(e) => skipped.push((id.clone(), format!("转码被跳过：{e}"))),
@@ -1440,6 +1460,24 @@ fn finish_transcode(app: &AppHandle, id: &str, result: Result<std::path::PathBuf
         prod.meta = meta;
         prod.updated_at = now_str();
         state.history.lock().unwrap().upsert(prod.clone());
+        // 产物缩略图：从最终产物抽帧（与下载完成兜底同链路）
+        {
+            let app2 = app.clone();
+            let pid = prod.id.clone();
+            let cache_dir = state.paths.cache_dir();
+            let resolver2 = state.resolver();
+            let out2 = out.clone();
+            tauri::async_runtime::spawn(async move {
+                let dest = ytdlp_core::thumbs::thumb_path(&cache_dir, &pid);
+                if ytdlp_core::thumbs::extract_thumb(&resolver2, &out2, &dest, &mut |_| {})
+                    .is_ok()
+                {
+                    update_item(&app2, &pid, |it| {
+                        it.thumb = Some(dest.to_string_lossy().into_owned());
+                    });
+                }
+            });
+        }
         let _ = app.emit("item:ready", serde_json::json!({ "id": prod.id }));
         let _ = app.emit("list:changed", ());
     }
