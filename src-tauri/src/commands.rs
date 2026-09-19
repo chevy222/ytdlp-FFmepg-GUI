@@ -895,11 +895,10 @@ fn resolve_cookies(state: &AppState, item: &MediaItem) -> Option<PathBuf> {
             .and_then(ytdlp_core::cookies::host_from_url)
     })?;
     let store = CookieStore::new(state.paths.cookies_dir());
-    // 导出的 Netscape Cookie 落在**本任务私有目录**：其中可能含 HttpOnly 明文，
-    // 任务结束（finish_download）即随目录删除，不长期留在 temp/
+    // 导出的 Netscape Cookie 直接落在 config/cookies/ 下（用户可见、可手动检查）
     let tmp = state
         .paths
-        .task_temp_dir(&item.id)
+        .cookies_dir()
         .join(format!("cookies-{}.txt", host));
     store.export_netscape(&host, &tmp).ok().flatten()
 }
