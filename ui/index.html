@@ -1007,7 +1007,7 @@ function loadCookieList(){
     if(!list.length){el.className='site-empty';el.innerHTML='<div class="site-none">暂无已保存的站点 Cookie<small>去登录站点 → 顶部"登录完成"按钮即可保存 Cookie</small></div>';return;}
     el.className='site-list';
     el.innerHTML=list.map(c=>'<div class="site-row"><span class="host">'+esc(c.host)+'</span>'+
-      '<span class="meta">'+c.count+' 条'+(c.expires_at?' · 过期 '+new Date(c.expires_at*1000).toLocaleDateString():'')+'</span>'+
+      '<span class="meta">'+c.count+' 条</span>'+
       '<button class="del" data-del-cookie="'+esc(c.host)+'">×</button></div>').join('');
   }).catch(()=>{});
 }
@@ -1037,9 +1037,12 @@ function bindSetEvents(){
   page.querySelectorAll('[data-del-site]').forEach(b=>b.addEventListener('click',()=>{
     delete cfgRef().network.site_proxy[b.dataset.delSite]; renderSetPage();
   }));
-  page.querySelectorAll('[data-del-cookie]').forEach(b=>b.addEventListener('click',()=>{
+  // cookie 删除用事件委托（列表是异步加载的，直接绑定时元素还不存在）
+  const cookieListEl=page.querySelector('#cookieList');
+  if(cookieListEl)cookieListEl.addEventListener('click',e=>{
+    const b=e.target.closest('[data-del-cookie]'); if(!b)return;
     INVOKE('delete_cookie',{host:b.dataset.delCookie}).then(()=>loadCookieList()).catch(err=>toast(err));
-  }));
+  });
   page.querySelectorAll('[data-act="tool-dl"],[data-act="tool-up"],[data-act="tool-cancel"]').forEach(b=>b.addEventListener('click',()=>{
     const tool=b.dataset.tool;
     // 已是取消按钮 → 取消下载
