@@ -295,6 +295,20 @@ fn update_item(app: &AppHandle, id: &str, f: impl FnOnce(&mut MediaItem)) -> Opt
     Some(item)
 }
 
+/// 记录失败日志：多行错误信息拆成逐条（单条塞多行在 UI 上易被截断观感），
+/// 首行带前缀，其余行原样追加。
+fn log_error_lines(app: &AppHandle, id: &str, prefix: &str, e: &CoreError) {
+    let mut lines = e.to_string().lines();
+    if let Some(first) = lines.next() {
+        log_item(app, id, format!("{prefix}{first}"));
+    }
+    for l in lines {
+        if !l.trim().is_empty() {
+            log_item(app, id, l.to_string());
+        }
+    }
+}
+
 /// 记录日志行并 emit。
 fn log_item(app: &AppHandle, id: &str, line: impl Into<String>) {
     update_item(app, id, |it| {
@@ -743,7 +757,7 @@ fn finish_download(
             Status::Canceled
         }
         Err(e) => {
-            log_item(app, id, format!("下载失败：{}", e));
+            log_error_lines(app, id, "下载失败：", &e);
             Status::Failed
         }
     };
@@ -1084,7 +1098,7 @@ fn finish_merge(
             Status::Canceled
         }
         Err(e) => {
-            log_item(app, id, format!("合并失败：{}", e));
+            log_error_lines(app, id, "合并失败：", &e);
             Status::Failed
         }
     };
@@ -1381,7 +1395,7 @@ fn finish_transcode(app: &AppHandle, id: &str, result: Result<std::path::PathBuf
             (restore_status(app, id), Status::Canceled)
         }
         Err(e) => {
-            log_item(app, id, format!("转码失败：{}", e));
+            log_error_lines(app, id, "转码失败：", &e);
             (restore_status(app, id), Status::Failed)
         }
     };

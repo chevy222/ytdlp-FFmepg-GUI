@@ -232,14 +232,16 @@ fn build_vf(rot: RotAngle, max_w: u32, max_h: u32) -> Option<String> {
         _ => {}
     }
     if max_w > 0 || max_h > 0 {
-        let mut factors = vec!["1".to_string()];
+        // 缩放系数 s = min(1, MAXH/短边, MAXW/长边)。
+        // 注意：ffmpeg 表达式求值器的 min()/max() **只接受两个参数**，三参数写法
+        // 会在滤镜初始化时报 "Cannot parse expression for width"（实测）——必须两两嵌套。
+        let mut s = "1".to_string();
         if max_h > 0 {
-            factors.push(format!("{}/min(iw,ih)", max_h));
+            s = format!("min({},{}/min(iw,ih))", s, max_h);
         }
         if max_w > 0 {
-            factors.push(format!("{}/max(iw,ih)", max_w));
+            s = format!("min({},{}/max(iw,ih))", s, max_w);
         }
-        let s = format!("min({})", factors.join(","));
         parts.push(format!("scale='trunc(iw*{s}/2)*2':'trunc(ih*{s}/2)*2'"));
     }
     if parts.is_empty() {
@@ -529,7 +531,17 @@ fn run_transcode_once(
     }
     if !status.success() {
         let err = read_stderr(stderr);
-        on_log(format!("转码失败（已删除半成品，保留原文件）：{}", err));
+        // 多行 stderr 拆成逐条日志：单条塞进一个 entry 时 UI 侧易被截断观感，
+        // 逐行落日志才能完整回看 ffmpeg 的报错原因
+        let mut lines = err.lines();
+        if let Some(first) = lines.next() {
+            on_log(format!("转码失败（已删除半成品，保留原文件）：{first}"));
+        }
+        for l in lines {
+            if !l.trim().is_empty() {
+                on_log(l.to_string());
+            }
+        }
         let _ = std::fs::remove_file(&out);
         return Err(CoreError::ProcessFailed {
             program: "ffmpeg".into(),
@@ -672,8 +684,8 @@ mod tests {
         // transpose 后 iw/ih 互换，写 min(ih,max_h) 会把原长边当短边砍
         // （1920×1080 转 90° 后 ih=1920 → 被压成 606×1080 的历史 bug）
         let expected = concat!(
-            "scale='trunc(iw*min(1,1080/min(iw,ih),1920/max(iw,ih))/2)*2':",
-            "'trunc(ih*min(1,1080/min(iw,ih),1920/max(iw,ih))/2)*2'"
+            "scale='trunc(iw*min(min(1,1080/min(iw,ih)),1920/max(iw,ih))/2)*2':",
+            "'trunc(ih*min(min(1,1080/min(iw,ih)),1920/max(iw,ih))/2)*2'"
         );
         assert_eq!(vf, format!("transpose=1,{}", expected), "{}", vf);
         // 旋转与不旋转时 scale 表达式完全一致（旋转不变性）

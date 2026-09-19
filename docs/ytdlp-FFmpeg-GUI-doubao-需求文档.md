@@ -74,7 +74,7 @@
 | TC-02 | 批量转码逐条目独立执行，各自记日志与失败原因；失败条目可"重试"（重新解析后再转码） | `commands.rs::start_transcode` / `finish_transcode` |
 | TC-03 | 编码器：`auto`（`ffmpeg -encoders` 探测到 `hevc_qsv` 用 QSV，否则 libx265）/ `libx265` / `hevc_nvenc` / `hevc_amf`。参数：libx265 `-crf 23 -preset medium`；NVENC `-rc vbr -cq 23 -preset p5`；AMF `-qp_i 23 -qp_p 23 -quality balanced`；QSV `-global_quality 23`（`low_power` 开时加 `-low_power 1`） | `transcode.rs::pick_encoder` / `detect_hw_encoders` |
 | TC-04 | 手动旋转：按条目 `rot_angle` 生成 `transpose=1`（90°）/ `transpose=1,transpose=1`（180°）/ `transpose=2`（270°）；不做自动纠正 | `transcode.rs::build_vf` |
-| TC-05 | 分辨率封顶：`scale='trunc(iw*s/2)*2':'trunc(ih*s/2)*2'`，其中 `s=min(1, MAXH/min(iw,ih), MAXW/max(iw,ih))`——上限按**短边/长边**（旋转不变量）判定：transpose 后 `iw`/`ih` 互换，直接写 `min(ih,MAXH)` 会把原视频长边当短边砍（1080P 转 90° 变 606×1080 的历史 bug）；宽高各自取偶，不放大 | `transcode.rs::build_vf` |
+| TC-05 | 分辨率封顶：`scale='trunc(iw*s/2)*2':'trunc(ih*s/2)*2'`，其中 `s` 用 `min` **两两嵌套**表达（`min(min(1, MAXH/min(iw,ih)), MAXW/max(iw,ih))`）——上限按**短边/长边**（旋转不变量）判定：transpose 后 `iw`/`ih` 互换，直接写 `min(ih,MAXH)` 会把原视频长边当短边砍（1080P 转 90° 变 606×1080 的历史 bug）；且 ffmpeg 表达式求值器的 `min()`/`max()` **只接受两个参数**，三参数写法报 `Cannot parse expression for width`（实测）；宽高各自取偶，不放大 | `transcode.rs::build_vf` |
 | TC-06 | 码率封顶：`brcap_kbps` 有值时加 `-maxrate <n>k -bufsize <2n>k` | `transcode.rs::build_args` |
 | TC-07 | 音频增益：开启归一化且 `max_volume ∈ (-100,-0.5)dB` 时按 `min(-max_volume, max_gain_db)` 生成 `volume=XdB` 并重编码 AAC；否则音频 `copy`；作用于全部音轨（`-map 0:a?`） | `transcode.rs::build_args` |
 | TC-08 | 封面：`keep_cover` 开时按探测到的**封面流绝对索引**映射——不旋转 `-c:v:1 copy` 保质量；**旋转时封面同过 transpose 滤镜链**并重编码 mjpeg（`-q:v:1 2` + `-disposition:v:1 attached_pic`，copy 的封面不会跟随旋转）；源为 MKV 附件型封面（探测不到 attached_pic）时回退 `-map 0:t?` + `-c:t copy`（附件不参与旋转） | `transcode.rs::build_args` |
